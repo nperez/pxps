@@ -85,7 +85,7 @@ class POEx::ProxySession::Server with POEx::Role::TCPServer
             {
                 eval
                 {
-                    @result{'success', 'payload'} = ( 1, nfreeze( $self->subscribe_session($data->{payload}) ) );
+                    @result{'success', 'payload'} = ( 1, nfreeze( $self->subscribe_session($data) ) );
                 };
 
                 if($@)
@@ -134,6 +134,8 @@ class POEx::ProxySession::Server with POEx::Role::TCPServer
             if $self->has_session($session);
         
         my $meta = $payload->{meta};
+        bless($meta, 'Moose::Meta::Class');
+
         die 'Moose::Meta::Class required'
             if not blessed($meta) or
             if not $meta->isa('Moose::Meta::Class');
@@ -141,12 +143,13 @@ class POEx::ProxySession::Server with POEx::Role::TCPServer
         $self->set_session($session, { meta => $meta, wheel => $id });
     }
 
-    method subscribe_session(Str $session) returns (Moose::Meta::Class)
+    method subscribe_session(ProxyMessage $data) returns (Moose::Meta::Class)
     {
-        die "Session '$session' does not exist"
-            if not $self->has_session($session);
+        my $payload = thaw($data->{payload});
+        die "Session '$$payload' does not exist"
+            if not $self->has_session($$payload);
 
-        return $self->get_session($session)->{meta};
+        return { session => $$payload, meta => $self->get_session($$payload)->{meta} };
     }
 
     method deliver_message(ProxyMessage $data, WheelID $id)
