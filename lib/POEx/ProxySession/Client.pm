@@ -10,7 +10,9 @@ class POEx::ProxySession::Client with POEx::Role::TCPClient
     use POE::Filter::Reference;
     use MooseX::Types::Moose(':all');
     use MooseX::AttributeHelpers;
+    use Moose::Util('does_role');
     use Storable('thaw', 'nfreeze');
+    use signatures;
     use aliased 'POEx::Role::Event';
     use aliased 'MooseX::Method::Signatures::Meta::Method', 'MXMSMethod';
     use aliased 'Moose::Meta::Method';
@@ -80,7 +82,7 @@ class POEx::ProxySession::Client with POEx::Role::TCPClient
 
     after handle_on_connect(GlobRef $socket, Str $address, Int $port, WheelID $id) is Event
     {
-        $self->send_message({ type => 'listing'}, $self->last_wheel, $self->ID, 'receive_listing'); 
+        $self->return_to_sender({ type => 'listing'}, $self->last_wheel, $self->ID, 'receive_listing'); 
     }
 
     method handle_inbound_data(ProxyMessage $data, WheelID $id) is Event
@@ -158,7 +160,7 @@ class POEx::ProxySession::Client with POEx::Role::TCPClient
             }
         );
 
-        $self->send_message(\%data, $id, $self->ID, 'handle_on_subscribe');
+        $self->return_to_sender(\%data, $id, $self->ID, 'handle_on_subscribe');
     }
 
     method unsubscribe() is Event
@@ -181,7 +183,7 @@ class POEx::ProxySession::Client with POEx::Role::TCPClient
             payload => nfreeze(\%payload),
         );
 
-        $self->send_message(\%data, $id, $self->poe->sender, $return_event);
+        $self->return_to_sender(\%data, $id, $self->poe->sender, $return_event);
     }
 
     method unpublish() is Event
@@ -206,7 +208,8 @@ class POEx::ProxySession::Client with POEx::Role::TCPClient
     method handle_on_subscribe(ProxyMessage $data, WheelID $id) is Event
     {
         my $payload = thaw($data->{payload});
-        my ($alias, $meta) = %{$data}{'session', 'meta'};
+        my ($session_name, $meta) = %{$data}{'session', 'meta'};
+        my $self_address = $self->alias // $self->ID;
         
         bless($meta, 'Moose::Meta::Class');
 
@@ -214,20 +217,48 @@ class POEx::ProxySession::Client with POEx::Role::TCPClient
         
         foreach my $name ($meta->get_method_list)
         {
+            # build our closure proxy method
+            my $code = sub ($obj, @args)
+            {
+                my $payload = { event => $name, args => \@args };
+
+                my $msg =
+                {
+                    type => 'deliver',
+                    to => $session_name,
+                    payload => nfreeze($payload),
+                };
+
+                $obj->post($self_address, 'send_message', $msg, $id);
+            };
+
             my $method = $meta->get_method($name);
+            
+            my %args;
+
+            # making this assumption is okay for now
             bless($method, MXMSMethod);
+                    
+            $args{signature} = $method->signature // '(@args)';
+            $args{return_signature} = $method->return_signature if defined $method->return_signature;
 
-            if($method->can('signature'))
-            {
-                # We actually have a MXMS Method, \o/
+            # traits accessor isn't commited yet;
+            $args{traits} = [ map { Class::MOP::load_class($_); [$_, undef] } @{$method->traits} ] 
+                if $method->can('traits') and defined $method->traits;
 
-            }
-            else
-            {
-                # Boo. Bless it into a 'normal' method
-                bless($method, Method);
-            }
+            $args{body} = $code;
+
+            $new_meth = MXMSMethod->wrap(%args);
+            $new_meth->_set_name($name);
+            $new_meth->_set_package($anon->name);
+            Event->apply($new_meth) if not does_role(Event);
+            $anon->add_method($name, $new_meth);
         }
+
+        my $return = $self->delete_pending($session_name);
+        
+        $anon->add_after_method_modifer('_start', sub ($obj) { $obj->post($return->{sender}, $return->{event_name}) } );
+        $anon->name->new(alias => $session_name);
     }
     
     method send_result(Bool $success, Ref $payload, WheelID $id)
@@ -242,11 +273,16 @@ class POEx::ProxySession::Client with POEx::Role::TCPClient
         );
     }
 
-    method send_message(ProxyMessage $data, WheelID $id, SessionID $sender, Str $event_name)
+    method return_to_sender(ProxyMessage $data, WheelID $id, SessionID $sender, Str $event_name) as Event
     {
         state $my_id = 1;
         $data->{'id'} = $my_id;
         $self->set_pending($my_id++, { sender => $sender, event_name => $event_name });
+        $self->get_wheel($id)->put($data);
+    }
+
+    method send_message(ProxyMessage $data, WheelID $id) as Event
+    {
         $self->get_wheel($id)->put($data);
     }
 
