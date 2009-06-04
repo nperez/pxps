@@ -15,7 +15,6 @@ class POEx::ProxySession::Server with POEx::Role::TCPServer
     has sessions =>
     (
         metaclass   => 'MooseX::AttributeHelpers::Collection::Hash',
-        is          => 'rw',
         isa         => HashRef,
         lazy        => 1,
         default     => sub { {} },
@@ -34,7 +33,6 @@ class POEx::ProxySession::Server with POEx::Role::TCPServer
     has pending =>
     (
         metaclass   => 'MooseX::AttributeHelpers::Collection::Hash',
-        is          => 'rw',
         isa         => HashRef,
         lazy        => 1,
         default     => sub { {} },
@@ -61,37 +59,52 @@ class POEx::ProxySession::Server with POEx::Role::TCPServer
 
         given($data->{type})
         {
-            when ('register')
+            when ('publish')
             {
                 eval
                 {
-                    $self->register_session($data, $id);
+                    $self->publish_session($data, $id);
                     $result{success} = 1;
                 };
 
                 if($@)
                 {
                     @result{'success', 'payload'} = ( 0, nfreeze( \$@ ) );
-                    $self->get_wheel($id)->put(\$result);
+                    $self->get_wheel($id)->put(\%result);
+                    return;
+                }
+            }
+            when ('rescind')
+            {
+                eval
+                {
+                    $self->rescind_session($data, $id);
+                    $result{success} = 1;
+                };
+
+                if($@)
+                {
+                    @result{'success', 'payload'} = ( 0, nfreeze( \$@ ) );
+                    $self->get_wheel($id)->put(\%result);
                     return;
                 }
             }
             when ('listing')
             {
                 @result{'success', 'payload'} = ( 1, nfreeze( [$self->all_session_names] ) );
-                $self->get_wheel($id)->put(\$result);
+                $self->get_wheel($id)->put(\%result);
             }
             when ('subscribe')
             {
                 eval
                 {
-                    @result{'success', 'payload'} = ( 1, nfreeze( $self->subscribe_session($data) ) );
+                    @result{'success', 'payload'} = ( 1, nfreeze( $self->subscribe_session($data->{to}) ) );
                 };
 
                 if($@)
                 {
                     @result{'success', 'payload'} = ( 0, nfreeze( \$@ ) );
-                    $self->get_wheel($id)->put(\$result);
+                    $self->get_wheel($id)->put(\%result);
                     return;
                 }
 
@@ -106,7 +119,7 @@ class POEx::ProxySession::Server with POEx::Role::TCPServer
                 if($@)
                 {
                     @result{'success', 'payload'} = ( 0, nfreeze( \$@ ) );
-                    $self->get_wheel($id)->put(\$result);
+                    $self->get_wheel($id)->put(\%result);
                     return;
                 }
 
@@ -122,7 +135,21 @@ class POEx::ProxySession::Server with POEx::Role::TCPServer
         $self->get_wheel($id)->put(\%result);
     }
 
-    method register_session(ProxyMessage $data, WheelID $id)
+    method rescind_session(ProxyMessage $data, WheelID $id)
+    {
+        my $payload = thaw($data->{payload});
+
+        my $session = $payload->{session};
+        die "Session name required"
+            if not defined($session);
+        
+        die "Session '$session' doesn't exist"
+            if not $self->has_session($session);
+        
+        $self->delete_session($session);
+    }
+    
+    method publish_session(ProxyMessage $data, WheelID $id)
     {
         my $payload = thaw($data->{payload});
 
@@ -138,18 +165,17 @@ class POEx::ProxySession::Server with POEx::Role::TCPServer
 
         die 'Moose::Meta::Class required'
             if not blessed($meta) or
-            if not $meta->isa('Moose::Meta::Class');
+            not $meta->isa('Moose::Meta::Class');
 
         $self->set_session($session, { meta => $meta, wheel => $id });
     }
 
-    method subscribe_session(ProxyMessage $data) returns (Moose::Meta::Class)
+    method subscribe_session(Str $session_name)
     {
-        my $payload = thaw($data->{payload});
-        die "Session '$$payload' does not exist"
-            if not $self->has_session($$payload);
+        die "Session '$session_name' does not exist"
+            if not $self->has_session($session_name);
 
-        return { session => $$payload, meta => $self->get_session($$payload)->{meta} };
+        return { session => $session_name, meta => $self->get_session($session_name)->{meta} };
     }
 
     method deliver_message(ProxyMessage $data, WheelID $id)

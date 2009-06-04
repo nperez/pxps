@@ -79,7 +79,12 @@ class POEx::ProxySession::Client with POEx::Role::TCPClient
 
     after handle_on_connect(GlobRef $socket, Str $address, Int $port, WheelID $id) is Event
     {
-        $self->return_to_sender({ type => 'listing'}, $self->last_wheel, $self->ID, 'receive_listing'); 
+        $self->return_to_sender
+        (
+            message         => { type => 'listing'}, 
+            wheel_id        => $self->last_wheel, 
+            return_session  => $self->ID, 
+            return_event    => 'receive_listing'); 
     }
 
     method handle_inbound_data(ProxyMessage $data, WheelID $id) is Event
@@ -91,7 +96,7 @@ class POEx::ProxySession::Client with POEx::Role::TCPClient
                 if($self->has_pending($data->{id}))
                 {
                     my $pending = $self->get_pending($data->{id});
-                    $self->post($pending->{sender}, $pending->{event_name}, $data, $id);
+                    $self->post($pending->{return_session}, $pending->{return_event}, $pending->{tag}, $data, $id);
                 }
                 else
                 {
@@ -108,21 +113,26 @@ class POEx::ProxySession::Client with POEx::Role::TCPClient
                     my $session = $self->get_session($data->{to});
 
                     my $success = $self->post($session, $event, @args);
-                    my $back = "Unable to post '$event' to '$session'" if !$success;
-                    $self->send_result($success, $back // '', $id);
+                    my $back = \${"Unable to post '$event' to '$session'"} if !$success;
+                    
+                    $self->send_result
+                    (
+                        success     => $success, 
+                        payload     => $back // \'', 
+                        wheel_id    => $id
+                    );
                 }
                 else
                 {
                     warn q|Received a delivery for someone that isn't us|;
-                    $self->get_wheel($id)->put
+
+                    $self->send_result
                     (
-                        { 
-                            type    => 'result', 
-                            success => 0, 
-                            payload => nfreeze(\${'Recipient unknown'})
-                        }
+                        success     => 0,
+                        payload     => nfreeze(\'Unknown recipient'),
+                        wheel_id    => $id,
                     );
-                    return;
+
                 }
             }
         }
@@ -130,64 +140,137 @@ class POEx::ProxySession::Client with POEx::Role::TCPClient
 
     method subscribe(Str :$to_session, SessionAlias :$return_session?, Str :$return_event) is Event
     {
+        $return_session = $return_session // $self->poe->sender;
+        
         if(!$self->has_mapping($to_session))
         {
             $self->post
             (
-                $return_session // $self->poe->sender, 
+                $return_session,
                 $return_event,
                 { 
-                    type => 'result',
+                    type    => 'result',
                     success => 0,
-                    payload => nfreeze(\${'No know session exists'}),
+                    payload => nfreeze(\${'No known session exists'}),
                 }
             );
             return;
         }
         
         my $id = $self->get_mapping($to_session);
-        my $sender = $return_session // $self->poe->sender;
         my %data = ( type => 'subscribe', payload => nfreeze(\$to_session) );
-        $self->set_pending
+        
+        $self->return_to_sender
         (
-            $to_session, 
+            message         => \%data, 
+            wheel_id        => $id, 
+            return_session  => $self->ID, 
+            return_event    => 'handle_on_subscribe',
+            tag             =>
             {
-                sender => $sender, 
-                event_name => $return_event
+                return_session  => $return_session,
+                return_event    => $return_event,
             }
         );
-
-        $self->return_to_sender(\%data, $id, $self->ID, 'handle_on_subscribe');
     }
 
-    method unsubscribe() is Event
+    method unsubscribe(SessionAlias :$session_name, SessionAlias :$return_session?, Str :$return_event) is Event
     {
+        my $session = to_Session($session_name);
+        
+        die "Unknown session '$session_name'"
+            if not $session or not $self->has_session;
 
+        my $meta = $session->meta;
+        my $closure = sub { $self->delete_session($session_name) };
+        $meta->add_after_method_modifer('_stop', sub ($obj) { $obj->post($return_session, $return_event); $closure->(); } );
+        $self->post($session_name, '_stop');
     }
 
-    method publish(WheelID :$connection_id, 
+    method publish
+    (
+        WheelID :$connection_id, 
         SessionAlias :$session_name, 
         DoesSessionInstantiation :$session, 
-        SessionAlias :$return_session,  
-        Str :$return_event) is Event
+        SessionAlias :$return_session?,  
+        Str :$return_event
+    ) is Event
     {
-        my $meta = $other->meta;
+        my $meta = $session->meta;
 
-        my %payload = ( session => $alias, meta => $other ); 
+        my %payload = ( session => $session_name, meta => $session ); 
         my %data = 
         (
             type => 'register',
             payload => nfreeze(\%payload),
         );
 
-        $self->return_to_sender(\%data, $id, $self->poe->sender, $return_event);
+        my %tag = 
+        (
+            %payload,
+            return_session  => $return_session // $self->poe->sender,
+            return_event    => $return_event,
+        );
+
+        $self->return_to_sender
+        (
+            message         => \%data, 
+            wheel_id        => $connection_id, 
+            return_session  => $self->ID, 
+            return_event    => 'handle_on_publish', 
+            tag             => \%tag
+        );
     }
 
-    method unpublish() is Event
+    method handle_on_publish(ProxyMessage $data, WheelID $id, HashRef $tag) is Event
     {
+        if($data->{success})
+        {
+            $self->set_session
+            (
+                $tag->{session},
+                {
+                    meta => $tag->{meta},
+                    wheel => $id,
+                }
+            );
+
+            $self->post($tag->{return_session}, $tag->{return_event}, $tag->{session});
+        }
+        else
+        {
+            $self->post($tag->{return_session}, $tag->{return_event}, thaw($data->{payload}));
+        }
+    }
+
+    method rescind(SessionAlias :$session_name, SessionAlias :$return_session?, Str :$return_event) is Event
+    {
+        die "Session '$session_name' is not currently published"
+            if not $self->has_session($session_name);
+
+        my $hash = $self->get_session($session_name);
+        
+        $self->return_to_sender
+        (
+            message         => { type => 'rescind', payload => nfreeze(\$session_name) }, 
+            wheel_id        => $hash->{wheel},
+            return_session  => $self->ID,
+            return_event    => 'handle_on_rescind',
+            tag             =>
+            {
+                session         => $session_name,
+                return_session  => $return_session // $self->poe->sender,
+                return_event    => $return_event,
+            }
+        );
+    }
+
+    method handle_on_rescind(ProxyMessage $data, WheelID $id, HashRef $tag) is Event
+    {
+        $self->delete_session($tag->{session});
     }
     
-    method receive_listing(ProxyMessage $data, WheelID $id) is Event
+    method receive_listing(ProxyMessage $data, WheelID $id, Ref $tag?) is Event
     {
         my $payload = thaw($data->{payload});
 
@@ -202,10 +285,10 @@ class POEx::ProxySession::Client with POEx::Role::TCPClient
         $self->set_mapping($id, $payload);
     }
 
-    method handle_on_subscribe(ProxyMessage $data, WheelID $id) is Event
+    method handle_on_subscribe(ProxyMessage $data, WheelID $id, HashRef $tag) is Event
     {
         my $payload = thaw($data->{payload});
-        my ($session_name, $meta) = %{$data}{'session', 'meta'};
+        my ($session_name, $meta) = @$payload{'session', 'meta'};
         my $self_address = $self->alias // $self->ID;
         
         bless($meta, 'Moose::Meta::Class');
@@ -226,7 +309,13 @@ class POEx::ProxySession::Client with POEx::Role::TCPClient
                     payload => nfreeze($payload),
                 };
 
-                $obj->post($self_address, 'send_message', $msg, $id);
+                $obj->post
+                (
+                    $self_address, 
+                    'send_message', 
+                    message     => $msg, 
+                    wheel_id    => $id
+                );
             };
 
             my $method = $meta->get_method($name);
@@ -239,28 +328,31 @@ class POEx::ProxySession::Client with POEx::Role::TCPClient
             $args{signature} = $method->signature // '(@args)';
             $args{return_signature} = $method->return_signature if defined $method->return_signature;
 
-            # traits accessor isn't commited yet;
-            $args{traits} = [ map { Class::MOP::load_class($_); [$_, undef] } @{$method->traits} ] 
-                if $method->can('traits') and defined $method->traits;
+            if($method->has_traits)
+            {
+                # make sure all the method traits are loaded
+                map { Class::MOP::load_class($_) } keys %{$method->traits};
+                $args{traits} = $method->traits;
+            }
 
             $args{body} = $code;
 
-            $new_meth = MXMSMethod->wrap(%args);
+            my $new_meth = MXMSMethod->wrap(%args);
             $new_meth->_set_name($name);
             $new_meth->_set_package($anon->name);
-            Event->apply($new_meth) if not does_role(Event);
+            Event->apply($new_meth) if not does_role($new_meth, Event);
             $anon->add_method($name, $new_meth);
         }
 
-        my $return = $self->delete_pending($session_name);
+        $self->set_session($session_name, { meta => $meta, wheel => $id});
         
-        $anon->add_after_method_modifer('_start', sub ($obj) { $obj->post($return->{sender}, $return->{event_name}) } );
+        $anon->add_after_method_modifer('_start', sub ($obj) { $obj->post($tag->{return_session}, $tag->{return_event}) } );
         $anon->name->new(alias => $session_name);
     }
     
-    method send_result(Bool $success, Ref $payload, WheelID $id)
+    method send_result(Bool :$success, Ref :$payload, WheelID :$wheel_id)
     {
-        $self->get_wheel($id)->put
+        $self->get_wheel($wheel_id)->put
         (
             {
                 type    => 'result', 
@@ -270,17 +362,23 @@ class POEx::ProxySession::Client with POEx::Role::TCPClient
         );
     }
 
-    method return_to_sender(ProxyMessage $data, WheelID $id, SessionID $sender, Str $event_name) as Event
+    method return_to_sender
+    (   ProxyMessage :$message, 
+        WheelID :$wheel_id, 
+        SessionID :$return_session, 
+        Str :$return_event, 
+        Ref :$tag?
+    ) is Event
     {
         state $my_id = 1;
-        $data->{'id'} = $my_id;
-        $self->set_pending($my_id++, { sender => $sender, event_name => $event_name });
-        $self->get_wheel($id)->put($data);
+        $message->{'id'} = $my_id;
+        $self->set_pending($my_id++, { tag => $tag, return_session => $return_session, return_event => $return_event });
+        $self->get_wheel($wheel_id)->put($message);
     }
 
-    method send_message(ProxyMessage $data, WheelID $id) as Event
+    method send_message(ProxyMessage :$message, WheelID :$wheel_id) is Event
     {
-        $self->get_wheel($id)->put($data);
+        $self->get_wheel($wheel_id)->put($message);
     }
 
 }
