@@ -20,7 +20,6 @@ class POEx::ProxySession::Client with POEx::Role::TCPClient
     has pending =>
     (
         metaclass   => 'MooseX::AttributeHelpers::Collection::Hash',
-        is          => 'rw',
         isa         => HashRef,
         lazy        => 1,
         default     => sub { {} },
@@ -39,7 +38,6 @@ class POEx::ProxySession::Client with POEx::Role::TCPClient
     has sessions =>
     (
         metaclass   => 'MooseX::AttributeHelpers::Collection::Hash',
-        is          => 'rw',
         isa         => HashRef,
         lazy        => 1,
         default     => sub { {} },
@@ -58,7 +56,6 @@ class POEx::ProxySession::Client with POEx::Role::TCPClient
     has mapping =>
     (
         metaclass   => 'MooseX::AttributeHelpers::Collection::Hash',
-        is          => 'rw',
         isa         => HashRef,
         lazy        => 1,
         default     => sub { {} },
