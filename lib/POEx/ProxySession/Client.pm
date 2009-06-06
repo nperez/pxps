@@ -13,6 +13,7 @@ class POEx::ProxySession::Client with POEx::Role::TCPClient
     use Moose::Util('does_role');
     use Storable('thaw', 'nfreeze');
     use signatures;
+    use Socket;
     use aliased 'POEx::Role::Event';
     use aliased 'MooseX::Method::Signatures::Meta::Method', 'MXMSMethod';
     use aliased 'Moose::Meta::Method';
@@ -77,14 +78,45 @@ class POEx::ProxySession::Client with POEx::Role::TCPClient
         $self->filter(POE::Filter::Reference->new());
     }
 
+    around connect
+    (
+        Str :$remote_address, 
+        Int :$remote_port, 
+        SessionAlias|SessionID|Session|DoesSessionInstantiation :$return_session?, 
+        Str :$return_event)
+    {
+        $orig->($self, remote_address => $remote_address, remote_port => $remote_port);
+        
+        $self->set_pending
+        (
+            $remote_address.$remote_port, 
+            {
+                address         => $remote_address,
+                port            => $remote_port,
+                return_session  => $return_session // $self->poe->sender->ID, 
+                return_event    => $return_event 
+            } 
+        );
+    }
+
     after handle_on_connect(GlobRef $socket, Str $address, Int $port, WheelID $id) is Event
     {
+        my $addr_port = inet_ntoa($address) . $port;
+        my $tag;
+        
+        if($self->has_pending($addr_port))
+        {
+            $tag = $self->delete_pending($addr_port);
+        }
+
         $self->return_to_sender
         (
             message         => { type => 'listing'}, 
             wheel_id        => $self->last_wheel, 
             return_session  => $self->ID, 
-            return_event    => 'receive_listing'); 
+            return_event    => 'receive_listing',
+            tag             => $tag,
+        ); 
     }
 
     method handle_inbound_data(ProxyMessage $data, WheelID $id) is Event
@@ -198,7 +230,7 @@ class POEx::ProxySession::Client with POEx::Role::TCPClient
     {
         my $meta = $session->meta;
 
-        my %payload = ( session => $session_name, meta => $session ); 
+        my %payload = ( session => $session_name, meta => $meta ); 
         my %data = 
         (
             type => 'register',
@@ -208,7 +240,7 @@ class POEx::ProxySession::Client with POEx::Role::TCPClient
         my %tag = 
         (
             %payload,
-            return_session  => $return_session // $self->poe->sender,
+            return_session  => $return_session // $self->poe->sender->ID,
             return_event    => $return_event,
         );
 
@@ -234,13 +266,16 @@ class POEx::ProxySession::Client with POEx::Role::TCPClient
                     wheel => $id,
                 }
             );
+        }
 
-            $self->post($tag->{return_session}, $tag->{return_event}, $tag->{session});
-        }
-        else
-        {
-            $self->post($tag->{return_session}, $tag->{return_event}, thaw($data->{payload}));
-        }
+        $self->post
+        (
+            $tag->{return_session}, 
+            $tag->{return_event}, 
+            success         => $data->{success}, 
+            session_name    => $tag->{session}, 
+            payload         => $tag->{payload} ? thaw($tag->{payload}) : undef,
+        );
     }
 
     method rescind(SessionAlias :$session_name, SessionAlias :$return_session?, Str :$return_event) is Event
@@ -267,7 +302,19 @@ class POEx::ProxySession::Client with POEx::Role::TCPClient
 
     method handle_on_rescind(ProxyMessage $data, WheelID $id, HashRef $tag) is Event
     {
-        $self->delete_session($tag->{session});
+        if($data->{success})
+        {
+            $self->delete_session($tag->{session});
+        }
+
+        $self->post
+        (
+            $tag->{return_session},
+            $tag->{return_event},
+            success         => $tag->{success},
+            session_name    => $tag->{session},
+            payload         => $tag->{payload} ? thaw($tag->{payload}) : undef,
+        );
     }
     
     method receive_listing(ProxyMessage $data, WheelID $id, Ref $tag?) is Event
@@ -283,6 +330,18 @@ class POEx::ProxySession::Client with POEx::Role::TCPClient
         }
         
         $self->set_mapping($id, $payload);
+
+        if($tag)
+        {
+            $self->post
+            (
+                $tag->{return_session}, 
+                $tag->{return_event},
+                connection_id   => $id,
+                remote_address  => $tag->{address},
+                remote_port     => $tag->{port},
+            );
+        }
     }
 
     method handle_on_subscribe(ProxyMessage $data, WheelID $id, HashRef $tag) is Event
