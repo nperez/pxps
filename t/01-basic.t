@@ -1,12 +1,13 @@
 use Test::More('no_plan');
 use MooseX::Declare;
-use POE;
 
 BEGIN
 {
+    sub POE::Kernel::CATCH_EXCEPTIONS () { 0 }
     use_ok('POEx::ProxySession::Server');
     use_ok('POEx::ProxySession::Client');
 }
+use POE;
 
 class Foo with POEx::Role::SessionInstantiation
 {
@@ -28,7 +29,7 @@ class Foo with POEx::Role::SessionInstantiation
         );
     }
 
-    method handle_publish(Bool :$success, Str :$session, Ref :$payload) is Event
+    method handle_publish(Bool :$success, Str :$session_name, Ref :$payload?) is Event
     {
         if($success)
         {
@@ -78,6 +79,7 @@ class Tester with POEx::Role::SessionInstantiation
     
     has server => ( is => 'rw', isa => 'Ref');
     has client => ( is => 'rw', isa => 'Ref');
+    has connection_id => (is => 'rw', isa => 'Int');
 
     after _start(@args) is Event
     {
@@ -86,11 +88,20 @@ class Tester with POEx::Role::SessionInstantiation
             listen_ip   => '127.0.0.1',
             listen_port => 56789,
             alias       => 'Server',
+            options     => { trace => 1, debug => 1 },
         );
 
-        my $client = POEx::ProxySession::Client->new( alias => 'Client' );
+        my $client = POEx::ProxySession::Client->new
+        ( 
+            alias   => 'Client',
+            options => { trace => 1, debug => 1 },
+        );
 
-        Foo->new(alias => 'foo');
+        Foo->new
+        (
+            alias => 'foo',
+            options     => { trace => 1, debug => 1 },
+        );
 
         $self->post
         (
@@ -109,6 +120,9 @@ class Tester with POEx::Role::SessionInstantiation
     method post_connect(WheelID :$connection_id, Str :$remote_address, Int :$remote_port) is Event
     {
         Test::More::pass('Tester::post_connect called');
+        
+        $self->connection_id($connection_id);
+
         $self->post
         (
             'foo',
@@ -124,35 +138,44 @@ class Tester with POEx::Role::SessionInstantiation
         (
             'Client',
             'subscribe',
+            connection_id   => $self->connection_id,
             to_session      => 'FooSession',
             return_event    => 'post_subscription',
         );
     }
 
-    method post_subscription() is Event
+    method post_subscription(Bool :$success, Str :$session_name, Ref :$payload?) is Event
     {
-        Test::More::pass('Subscription successful');
+        if($success)
+        {
+            Test::More::pass('Subscription successful');
 
-        $self->post
-        (
-            'FoosSession',
-            'foo',
-            'string',
-        );
+            $self->post
+            (
+                'FoosSession',
+                'foo',
+                'string',
+            );
 
-        $self->post
-        (
-            'FoosSession',
-            'bar',
-            1,
-        );
+            $self->post
+            (
+                'FoosSession',
+                'bar',
+                1,
+            );
 
-        $self->post
-        (
-            'FoosSession',
-            'yar',
-            0,
-        );
+            $self->post
+            (
+                'FoosSession',
+                'yar',
+                0,
+            );
+        }
+        else
+        {
+            Test::More::fail('subscribe failed');
+            Test::More::BAIL_OUT($$payload);
+        }
     }
 
     method finish() is Event
@@ -165,7 +188,7 @@ class Tester with POEx::Role::SessionInstantiation
     }
 }
 
-Tester->new(alias => 'Tester');
+Tester->new(alias => 'Tester', options => {debug => 1, trace => 1});
 
 POE::Kernel->run();
 

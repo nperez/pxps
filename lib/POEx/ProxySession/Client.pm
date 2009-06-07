@@ -1,6 +1,7 @@
 use 5.010;
 
 use MooseX::Declare;
+$Storable::forgive_me = 1;
 
 class POEx::ProxySession::Client with POEx::Role::TCPClient
 {
@@ -54,25 +55,6 @@ class POEx::ProxySession::Client with POEx::Role::TCPClient
         }
     );
 
-    has mapping =>
-    (
-        metaclass   => 'MooseX::AttributeHelpers::Collection::Hash',
-        isa         => HashRef,
-        lazy        => 1,
-        default     => sub { {} },
-        clearer     => 'clear_mappings',
-        provides    => 
-        {
-            get     => 'get_mapping',
-            set     => 'set_mapping',
-            delete  => 'delete_mapping',
-            count   => 'count_mappings',
-            keys    => 'all_mapping_names',
-            exists  => 'has_mapping',
-        }
-
-    );
-
     after _start(@args) is Event
     {
         $self->filter(POE::Filter::Reference->new());
@@ -83,13 +65,14 @@ class POEx::ProxySession::Client with POEx::Role::TCPClient
         Str :$remote_address, 
         Int :$remote_port, 
         SessionAlias|SessionID|Session|DoesSessionInstantiation :$return_session?, 
-        Str :$return_event)
+        Str :$return_event
+    ) is Event
     {
         $orig->($self, remote_address => $remote_address, remote_port => $remote_port);
         
         $self->set_pending
         (
-            $remote_address.$remote_port, 
+            "$remote_address:$remote_port", 
             {
                 address         => $remote_address,
                 port            => $remote_port,
@@ -101,22 +84,25 @@ class POEx::ProxySession::Client with POEx::Role::TCPClient
 
     after handle_on_connect(GlobRef $socket, Str $address, Int $port, WheelID $id) is Event
     {
-        my $addr_port = inet_ntoa($address) . $port;
-        my $tag;
+        my $addr = inet_ntoa($address);
+        my $addr_port = "$addr:$port";
         
         if($self->has_pending($addr_port))
         {
-            $tag = $self->delete_pending($addr_port);
+            my $tag = $self->delete_pending($addr_port);
+            $self->post
+            (
+                $tag->{return_session},
+                $tag->{return_event},
+                connection_id   => $self->last_wheel,
+                remote_address  => $addr,
+                remote_port     => $port,
+            );
         }
-
-        $self->return_to_sender
-        (
-            message         => { type => 'listing'}, 
-            wheel_id        => $self->last_wheel, 
-            return_session  => $self->ID, 
-            return_event    => 'receive_listing',
-            tag             => $tag,
-        ); 
+        else
+        {
+            die "Connect finished for unknown address: $addr_port";
+        }
     }
 
     method handle_inbound_data(ProxyMessage $data, WheelID $id) is Event
@@ -127,8 +113,8 @@ class POEx::ProxySession::Client with POEx::Role::TCPClient
             {
                 if($self->has_pending($data->{id}))
                 {
-                    my $pending = $self->get_pending($data->{id});
-                    $self->post($pending->{return_session}, $pending->{return_event}, $pending->{tag}, $data, $id);
+                    my $pending = $self->delete_pending($data->{id});
+                    $self->post($pending->{return_session}, $pending->{return_event}, $data, $id, $pending->{tag});
                 }
                 else
                 {
@@ -170,40 +156,133 @@ class POEx::ProxySession::Client with POEx::Role::TCPClient
         }
     }
 
-    method subscribe(Str :$to_session, SessionAlias :$return_session?, Str :$return_event) is Event
+    method subscribe
+    (
+        WheelID :$connection_id,
+        SessionAlias :$to_session, 
+        SessionAlias :$return_session?, 
+        Str :$return_event
+    ) is Event
     {
         $return_session = $return_session // $self->poe->sender;
         
-        if(!$self->has_mapping($to_session))
-        {
-            $self->post
-            (
-                $return_session,
-                $return_event,
-                { 
-                    type    => 'result',
-                    success => 0,
-                    payload => nfreeze(\${'No known session exists'}),
-                }
-            );
-            return;
-        }
-        
-        my $id = $self->get_mapping($to_session);
-        my %data = ( type => 'subscribe', payload => nfreeze(\$to_session) );
+        my %data = ( type => 'subscribe', to => $to_session, payload => nfreeze(\$to_session) );
         
         $self->return_to_sender
         (
             message         => \%data, 
-            wheel_id        => $id, 
+            wheel_id        => $connection_id, 
             return_session  => $self->ID, 
             return_event    => 'handle_on_subscribe',
             tag             =>
             {
+                session         => $to_session,
                 return_session  => $return_session,
                 return_event    => $return_event,
             }
         );
+    }
+
+    method handle_on_subscribe(ProxyMessage $data, WheelID $id, HashRef $tag) is Event
+    {
+        if($data->{success})
+        {
+            my $payload = thaw($data->{payload});
+            my ($session_name, $meta) = @$payload{'session', 'meta'};
+            my $self_address = $self->alias // $self->ID;
+            
+            bless($meta, 'Moose::Meta::Class');
+
+            my $anon = Moose::Meta::Class->create_anon_class();
+            
+            foreach my $name ($meta->get_method_list)
+            {
+                # build our closure proxy method
+                my $code = sub ($obj, @args)
+                {
+                    my $payload = { event => $name, args => \@args };
+
+                    my $msg =
+                    {
+                        type => 'deliver',
+                        to => $session_name,
+                        payload => nfreeze($payload),
+                    };
+
+                    $obj->post
+                    (
+                        $self_address, 
+                        'send_message', 
+                        message     => $msg, 
+                        wheel_id    => $id
+                    );
+                };
+
+                my $method = $meta->get_method($name);
+                
+                my %args;
+
+                # making this assumption is okay for now
+                bless($method, MXMSMethod);
+                
+                $args{name} = $name;
+                warn "BEFORE HERE1";
+                $args{package_name} = $self->meta->name;
+                warn "AFTER HERE1";
+                $args{signature} = $method->signature // '(@args)';
+                $args{return_signature} = $method->return_signature if defined $method->return_signature;
+                $args{body} = $code;
+                
+                if($method->has_traits)
+                {
+                    # make sure all the method traits are loaded
+                    map { Class::MOP::load_class($_) } keys %{$method->traits};
+                    $args{traits} = $method->traits;
+                }
+                
+                warn "BEFORE HERE2";
+                warn 'SIGNATURE: ' . $args{signature};
+                warn 'RETURN_SIG: ' . $args{return_signature};
+                $DB::single = 1;
+                warn 'POEx::Types::Session'->name;
+                my $new_meth = MXMSMethod->wrap(%args);
+                warn "AFTER HERE2";
+                Event->meta->apply($new_meth) if not does_role($new_meth, Event);
+                $anon->add_method($name, $new_meth);
+            }
+
+            $self->set_session($session_name, { meta => $meta, wheel => $id});
+            
+            $anon->add_after_method_modifier
+            (
+                '_start', 
+                sub ($obj) 
+                {
+                    $obj->post
+                    (
+                        $tag->{return_session}, 
+                        $tag->{return_event},
+                        success         => $data->{success},
+                        session_name    => $session_name,
+                        payload         => $payload,
+                    ) 
+                } 
+            );
+            warn "BEFORE HERE";
+            $anon->name->new(alias => $session_name);
+            warn "AFTER HERE";
+        }
+        else
+        {
+            $self->post
+            (
+               $tag->{return_session},
+               $tag->{return_event},
+               success          => $data->{success},
+               session_name     => $tag->{session},
+               payload          => thaw($data->{payload})
+            );
+        }
     }
 
     method unsubscribe(SessionAlias :$session_name, SessionAlias :$return_session?, Str :$return_event) is Event
@@ -233,7 +312,7 @@ class POEx::ProxySession::Client with POEx::Role::TCPClient
         my %payload = ( session => $session_name, meta => $meta ); 
         my %data = 
         (
-            type => 'register',
+            type => 'publish',
             payload => nfreeze(\%payload),
         );
 
@@ -268,13 +347,14 @@ class POEx::ProxySession::Client with POEx::Role::TCPClient
             );
         }
 
+        my %args = ( success => $data->{success}, session_name => $tag->{session} );
+        $args{payload} = thaw($tag->{payload}) if defined($tag->{payload});
+
         $self->post
         (
             $tag->{return_session}, 
-            $tag->{return_event}, 
-            success         => $data->{success}, 
-            session_name    => $tag->{session}, 
-            payload         => $tag->{payload} ? thaw($tag->{payload}) : undef,
+            $tag->{return_event},
+            %args
         );
     }
 
@@ -307,106 +387,15 @@ class POEx::ProxySession::Client with POEx::Role::TCPClient
             $self->delete_session($tag->{session});
         }
 
+        my %args = ( success => $data->{success}, session_name => $tag->{session} );
+        $args{payload} = thaw($tag->{payload}) if defined($tag->{payload});
+
         $self->post
         (
-            $tag->{return_session},
+            $tag->{return_session}, 
             $tag->{return_event},
-            success         => $tag->{success},
-            session_name    => $tag->{session},
-            payload         => $tag->{payload} ? thaw($tag->{payload}) : undef,
+            %args
         );
-    }
-    
-    method receive_listing(ProxyMessage $data, WheelID $id, Ref $tag?) is Event
-    {
-        my $payload = thaw($data->{payload});
-
-        foreach my $listing (@$payload)
-        {
-            warn "Listing clash. Overwriting previous entry '$listing'"
-                if $self->has_mapping($listing);
-
-            $self->set_mapping($listing, $id);
-        }
-        
-        $self->set_mapping($id, $payload);
-
-        if($tag)
-        {
-            $self->post
-            (
-                $tag->{return_session}, 
-                $tag->{return_event},
-                connection_id   => $id,
-                remote_address  => $tag->{address},
-                remote_port     => $tag->{port},
-            );
-        }
-    }
-
-    method handle_on_subscribe(ProxyMessage $data, WheelID $id, HashRef $tag) is Event
-    {
-        my $payload = thaw($data->{payload});
-        my ($session_name, $meta) = @$payload{'session', 'meta'};
-        my $self_address = $self->alias // $self->ID;
-        
-        bless($meta, 'Moose::Meta::Class');
-
-        my $anon = Moose::Meta::Class->create_anon_class();
-        
-        foreach my $name ($meta->get_method_list)
-        {
-            # build our closure proxy method
-            my $code = sub ($obj, @args)
-            {
-                my $payload = { event => $name, args => \@args };
-
-                my $msg =
-                {
-                    type => 'deliver',
-                    to => $session_name,
-                    payload => nfreeze($payload),
-                };
-
-                $obj->post
-                (
-                    $self_address, 
-                    'send_message', 
-                    message     => $msg, 
-                    wheel_id    => $id
-                );
-            };
-
-            my $method = $meta->get_method($name);
-            
-            my %args;
-
-            # making this assumption is okay for now
-            bless($method, MXMSMethod);
-                    
-            $args{signature} = $method->signature // '(@args)';
-            $args{return_signature} = $method->return_signature if defined $method->return_signature;
-
-            if($method->has_traits)
-            {
-                # make sure all the method traits are loaded
-                map { Class::MOP::load_class($_) } keys %{$method->traits};
-                $args{traits} = $method->traits;
-            }
-
-            $args{body} = $code;
-
-            my $new_meth = MXMSMethod->wrap(%args);
-            $new_meth->_set_name($name);
-            $new_meth->_set_package($anon->name);
-            Event->apply($new_meth) if not does_role($new_meth, Event);
-            $anon->add_method($name, $new_meth);
-        }
-
-        $self->set_session($session_name, { meta => $meta, wheel => $id});
-        
-        $anon->add_after_method_modifer('_start', sub ($obj) { $obj->post($tag->{return_session}, $tag->{return_event}) } );
-        $anon->name->new(alias => $session_name);
     }
     
     method send_result(Bool :$success, Ref :$payload, WheelID :$wheel_id)

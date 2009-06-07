@@ -1,6 +1,7 @@
 use 5.010;
 
 use MooseX::Declare;
+$Storable::forgive_me = 1;
 
 class POEx::ProxySession::Server with POEx::Role::TCPServer
 {
@@ -69,6 +70,7 @@ class POEx::ProxySession::Server with POEx::Role::TCPServer
 
                 if($@)
                 {
+                    warn "######################### ERROR: $@";
                     @result{'success', 'payload'} = ( 0, nfreeze( \$@ ) );
                     $self->get_wheel($id)->put(\%result);
                     return;

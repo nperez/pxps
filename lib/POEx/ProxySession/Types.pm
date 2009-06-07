@@ -14,9 +14,11 @@ subtype 'ProxyMessage',
     ],
     where 
     { 
-        ( $_->{type} eq 'deliver' && defined($_->{to}) ) ||
-        ( $_->{type} eq 'result' && defined($_->{success}) ) ||
-        ( $_->{type} eq 'subscribe' && defined($_->{to}) )
+        ( $_->{type} eq 'deliver' && defined($_->{to}) )        ||
+        ( $_->{type} eq 'result' && defined($_->{success}) )    ||
+        ( $_->{type} eq 'subscribe' && defined($_->{to}) )      ||
+        ( $_->{type} eq 'publish' && defined($_->{payload}) )   ||
+        ( $_->{type} eq 'listing' )
     };
         
         
