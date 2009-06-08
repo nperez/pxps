@@ -1,11 +1,9 @@
 use 5.010;
-use warnings;
-use strict;
 
 use MooseX::Declare;
 $Storable::forgive_me = 1;
 
-class POEx::ProxySession::Client with POEx::Role::TCPClient
+class POEx::ProxySession::Client with POEx::Role::TCPClient is dirty
 {
     use 5.010;
     use POEx::ProxySession::Types(':all');
@@ -17,7 +15,9 @@ class POEx::ProxySession::Client with POEx::Role::TCPClient
     use Storable('thaw', 'nfreeze');
     use signatures;
     use Socket;
+    use Scalar::Util;
     use aliased 'POEx::Role::Event';
+    use aliased 'POEx::Role::ProxyEvent';
     use aliased 'MooseX::Method::Signatures::Meta::Method', 'MXMSMethod';
     use aliased 'Moose::Meta::Method';
 
@@ -38,24 +38,48 @@ class POEx::ProxySession::Client with POEx::Role::TCPClient
         }
 
     );
-
-    has sessions =>
+    
+    has subscriptions =>
     (
         metaclass   => 'MooseX::AttributeHelpers::Collection::Hash',
         isa         => HashRef,
         lazy        => 1,
         default     => sub { {} },
-        clearer     => 'clear_sessions',
+        clearer     => 'clear_subscriptions',
         provides    => 
         {
-            get     => 'get_session',
-            set     => 'set_session',
-            delete  => 'delete_session',
-            count   => 'count_sessions',
-            keys    => 'all_session_names',
-            exists  => 'has_session',
+            get     => 'get_subscription',
+            set     => 'set_subscription',
+            delete  => 'delete_subscription',
+            count   => 'count_subscriptions',
+            keys    => 'all_subscription_names',
+            exists  => 'has_subscription',
         }
     );
+    
+    has publications =>
+    (
+        metaclass   => 'MooseX::AttributeHelpers::Collection::Hash',
+        isa         => HashRef,
+        lazy        => 1,
+        default     => sub { {} },
+        clearer     => 'clear_publications',
+        provides    => 
+        {
+            get     => 'get_publication',
+            set     => 'set_publication',
+            delete  => 'delete_publication',
+            count   => 'count_publications',
+            keys    => 'all_publication_names',
+            exists  => 'has_publication',
+        }
+    );
+
+    method next_message_id() returns (Int)
+    {
+        state $id = 0;
+        return $id++;
+    }
 
     after _start(@args) is Event
     {
@@ -126,18 +150,16 @@ class POEx::ProxySession::Client with POEx::Role::TCPClient
             }
             when ('deliver')
             {
-                if($self->has_session($data->{to}))
+                if($self->has_publication($data->{to}))
                 {
                     my $payload = thaw($data->{payload});
-                    my ($event, @args) = ($payload->{event}, @{ $payload->{args} });
-                    my $session = $self->get_session($data->{to});
-
-                    my $success = $self->post($session, $event, @args);
-                    my $back = \${"Unable to post '$event' to '$session'"} if !$success;
+                    my $success = $self->post($data->{to}, $payload->{event}, @{ $payload->{args} });
+                    my $back = \${q|Unable to post '| . $payload->{event} . q|' to '| . $data->{to} . q|'|} if !$success;
                     
                     $self->send_result
                     (
                         success     => $success, 
+                        original    => $data,
                         payload     => $back // \'', 
                         wheel_id    => $id
                     );
@@ -149,7 +171,8 @@ class POEx::ProxySession::Client with POEx::Role::TCPClient
                     $self->send_result
                     (
                         success     => 0,
-                        payload     => nfreeze(\'Unknown recipient'),
+                        original    => $data,
+                        payload     => \'Unknown recipient',
                         wheel_id    => $id,
                     );
 
@@ -168,7 +191,13 @@ class POEx::ProxySession::Client with POEx::Role::TCPClient
     {
         $return_session = $return_session // $self->poe->sender;
         
-        my %data = ( type => 'subscribe', to => $to_session, payload => nfreeze(\$to_session) );
+        my %data = 
+        (
+            id => $self->next_message_id,
+            type => 'subscribe', 
+            to => $to_session, 
+            payload => nfreeze(\$to_session) 
+        );
         
         $self->return_to_sender
         (
@@ -194,38 +223,99 @@ class POEx::ProxySession::Client with POEx::Role::TCPClient
             my $self_address = $self->alias // $self->ID;
             
             bless($meta, 'Moose::Meta::Class');
-
-            my $anon = Moose::Meta::Class->create_anon_class();
             
-            foreach my $name ($meta->get_method_list)
+            my $anon = class with POEx::Role::SessionInstantiation
             {
+                use POEx::Types(':all');
+                use aliased 'POEx::Role::Event';
+                use Storable('thaw');
+                after _start(@args) is Event
+                {
+                    $self->post
+                    (
+                        $tag->{return_session}, 
+                        $tag->{return_event},
+                        success         => $data->{success},
+                        session_name    => $session_name,
+                        payload         => $payload,
+                    );
+
+                    $self->poe->kernel->detach_myself();
+                }
+
+                method proxy_send_failure(ProxyMessage $data, WheelID $id, HashRef $tag) is Event
+                {
+                    use Data::Dumper;
+                    warn 'A proxy call to '. $tag->{session_name} . ':'. $tag->{event_name} .
+                    ' with the arguments [ ' . join(', ', @{ $tag->{args} }) . ' ] failed: '.
+                    thaw($data->{payload}) if !$data->{success};
+                }
+
+                method shutdown() is Event
+                {
+                    $self->clear_alias;
+                }
+            };
+            
+            my $methods = $meta->{methods};
+            foreach my $name (keys %$methods)
+            {
+                my $method = $methods->{$name};
+                if($method->isa('Class::MOP::Method::Wrapped'))
+                {
+                    my $orig = $method->get_original_method;
+                    if(!$orig->meta->isa('Moose::Meta::Class') || !$orig->meta->does_role(ProxyEvent))
+                    {
+                        next;
+                    }
+                    else
+                    {
+                        $method = $orig;
+                    }
+
+                }
+                elsif(!$method->meta->isa('Moose::Meta::Class') || !$method->meta->does_role(ProxyEvent))
+                {
+                    next;
+                }
+                
+                # making this assumption is okay for now
+                bless($method, MXMSMethod);
+                
                 # build our closure proxy method
                 my $code = sub ($obj, @args)
                 {
-                    my $payload = { event => $name, args => \@args };
+                    my $outside = $self;
+                    Scalar::Util::weaken($outside);
+                    my $load = { event => $name, args => \@args };
 
                     my $msg =
                     {
+                        id => $outside->next_message_id,
                         type => 'deliver',
                         to => $session_name,
-                        payload => nfreeze($payload),
+                        payload => nfreeze($load),
                     };
 
                     $obj->post
                     (
                         $self_address, 
-                        'send_message', 
-                        message     => $msg, 
-                        wheel_id    => $id
+                        'return_to_sender', 
+                        message         => $msg, 
+                        wheel_id        => $id,
+                        return_session  => $obj->ID,
+                        return_event    => 'proxy_send_failure',
+                        tag             => 
+                        {
+                            session_name    => $session_name,
+                            event_name      => $name,
+                            args            => \@args,
+                        }
                     );
                 };
 
-                my $method = $meta->get_method($name);
                 
                 my %args;
-
-                # making this assumption is okay for now
-                bless($method, MXMSMethod);
                 
                 $args{name} = $name;
                 $args{package_name} = $self->meta->name;
@@ -240,38 +330,14 @@ class POEx::ProxySession::Client with POEx::Role::TCPClient
                     $args{traits} = $method->traits;
                 }
                 
-                use Data::Dumper;
-                {
-                    no strict 'refs';
-                    warn 'STASH: '.Dumper(\%{$self->meta->name.'::'});
-                }
-                warn 'ARGS: ' . Dumper(\%args);
-                $DB::single = 1;
                 my $new_meth = MXMSMethod->wrap(%args);
                 Event->meta->apply($new_meth) if not does_role($new_meth, Event);
                 $anon->add_method($name, $new_meth);
             }
 
-            $self->set_session($session_name, { meta => $meta, wheel => $id});
+            $self->set_subscription($session_name, { meta => $anon, wheel => $id});
             
-            $anon->add_after_method_modifier
-            (
-                '_start', 
-                sub ($obj) 
-                {
-                    $obj->post
-                    (
-                        $tag->{return_session}, 
-                        $tag->{return_event},
-                        success         => $data->{success},
-                        session_name    => $session_name,
-                        payload         => $payload,
-                    ) 
-                } 
-            );
-            warn "BEFORE HERE";
-            $anon->name->new(alias => $session_name);
-            warn "AFTER HERE";
+            $anon->name->new(alias => $session_name, options => { trace => 1, debug => 1});
         }
         else
         {
@@ -288,21 +354,30 @@ class POEx::ProxySession::Client with POEx::Role::TCPClient
 
     method unsubscribe(SessionAlias :$session_name, SessionAlias :$return_session?, Str :$return_event) is Event
     {
+        die "Unknown session '$session_name'"
+            if not $self->has_subscription($session_name);
+
         my $session = to_Session($session_name);
         
-        die "Unknown session '$session_name'"
-            if not $session or not $self->has_session;
-
+        $return_session = $return_session // $self->poe->sender;
+        
+        if(!$session)
+        {
+            $self->delete_subscription($session_name);
+            $self->post($return_session, $return_event);
+            return;
+        }
+        
         my $meta = $session->meta;
-        my $closure = sub { $self->delete_session($session_name) };
-        $meta->add_after_method_modifer('_stop', sub ($obj) { $obj->post($return_session, $return_event); $closure->(); } );
-        $self->post($session_name, '_stop');
+        my $closure = sub { $self->delete_subscription($session_name) };
+        $meta->add_after_method_modifer('_stop', sub ($obj) { $obj->post($return_session , $return_event); $closure->(); } );
+        $self->post($session_name, 'shutdown');
     }
 
     method publish
     (
         WheelID :$connection_id, 
-        SessionAlias :$session_name, 
+        SessionAlias :$session_alias, 
         DoesSessionInstantiation :$session, 
         SessionAlias :$return_session?,  
         Str :$return_event
@@ -310,11 +385,17 @@ class POEx::ProxySession::Client with POEx::Role::TCPClient
     {
         my $meta = $session->meta;
 
-        my %payload = ( session => $session_name, meta => $meta ); 
+        my %payload = ( session_name => $session->alias // $session->ID, session_alias => $session_alias, meta => $meta ); 
+        my $frozen;
+        {
+            local $SIG{__WARN__} = sub { };
+            $frozen = nfreeze(\%payload);
+        }
         my %data = 
         (
+            id => $self->next_message_id,
             type => 'publish',
-            payload => nfreeze(\%payload),
+            payload => $frozen,
         );
 
         my %tag = 
@@ -338,17 +419,18 @@ class POEx::ProxySession::Client with POEx::Role::TCPClient
     {
         if($data->{success})
         {
-            $self->set_session
+            $self->set_publication
             (
-                $tag->{session},
+                $tag->{session_name},
                 {
                     meta => $tag->{meta},
                     wheel => $id,
+                    alias => $tag->{session_alias},
                 }
             );
         }
 
-        my %args = ( success => $data->{success}, session_name => $tag->{session} );
+        my %args = ( success => $data->{success}, session_alias => $tag->{session_alias} );
         $args{payload} = thaw($tag->{payload}) if defined($tag->{payload});
 
         $self->post
@@ -359,22 +441,28 @@ class POEx::ProxySession::Client with POEx::Role::TCPClient
         );
     }
 
-    method rescind(SessionAlias :$session_name, SessionAlias :$return_session?, Str :$return_event) is Event
+    method rescind(DoesSessionInstantiation :$session, SessionAlias :$return_session?, Str :$return_event) is Event
     {
-        die "Session '$session_name' is not currently published"
-            if not $self->has_session($session_name);
+        my $name = $session->alias // $session->ID;
+        die "Session '$name' is not currently published"
+            if not $self->has_publication($name);
 
-        my $hash = $self->get_session($session_name);
+        my $hash = $self->get_publication($name);
         
         $self->return_to_sender
         (
-            message         => { type => 'rescind', payload => nfreeze(\$session_name) }, 
+            message         => 
+            {
+                id => $self->next_message_id,
+                type => 'rescind', 
+                payload => nfreeze( { session_alias => $hash->{alias} } ) 
+            }, 
             wheel_id        => $hash->{wheel},
             return_session  => $self->ID,
             return_event    => 'handle_on_rescind',
             tag             =>
             {
-                session         => $session_name,
+                session         => $name,
                 return_session  => $return_session // $self->poe->sender,
                 return_event    => $return_event,
             }
@@ -385,7 +473,7 @@ class POEx::ProxySession::Client with POEx::Role::TCPClient
     {
         if($data->{success})
         {
-            $self->delete_session($tag->{session});
+            $self->delete_publication($tag->{session});
         }
 
         my %args = ( success => $data->{success}, session_name => $tag->{session} );
@@ -399,11 +487,12 @@ class POEx::ProxySession::Client with POEx::Role::TCPClient
         );
     }
     
-    method send_result(Bool :$success, Ref :$payload, WheelID :$wheel_id)
+    method send_result(Bool :$success, ProxyMessage :$original, Ref :$payload, WheelID :$wheel_id)
     {
         $self->get_wheel($wheel_id)->put
         (
             {
+                id      => $original->{id},
                 type    => 'result', 
                 success => $success,
                 payload => nfreeze($payload),
@@ -419,15 +508,7 @@ class POEx::ProxySession::Client with POEx::Role::TCPClient
         Ref :$tag?
     ) is Event
     {
-        state $my_id = 1;
-        $message->{'id'} = $my_id;
-        $self->set_pending($my_id++, { tag => $tag, return_session => $return_session, return_event => $return_event });
+        $self->set_pending($message->{id}, { tag => $tag, return_session => $return_session, return_event => $return_event });
         $self->get_wheel($wheel_id)->put($message);
     }
-
-    method send_message(ProxyMessage :$message, WheelID :$wheel_id) is Event
-    {
-        $self->get_wheel($wheel_id)->put($message);
-    }
-
 }

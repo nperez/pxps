@@ -7,17 +7,18 @@ subtype 'ProxyMessage',
     as Dict
     [
         type => Str,
+        id => Int,
         payload => Optional[Str],
         to => Optional[Str],
-        id => Optional[Int],
         success => Optional[Bool],
     ],
     where 
     { 
-        ( $_->{type} eq 'deliver' && defined($_->{to}) )        ||
-        ( $_->{type} eq 'result' && defined($_->{success}) )    ||
-        ( $_->{type} eq 'subscribe' && defined($_->{to}) )      ||
-        ( $_->{type} eq 'publish' && defined($_->{payload}) )   ||
+        ( $_->{type} eq 'deliver'   && defined($_->{to})        )   ||
+        ( $_->{type} eq 'result'    && defined($_->{success})   )   ||
+        ( $_->{type} eq 'subscribe' && defined($_->{to})        )   ||
+        ( $_->{type} eq 'publish'   && defined($_->{payload})   )   ||
+        ( $_->{type} eq 'rescind'   && defined($_->{payload})   )   ||
         ( $_->{type} eq 'listing' )
     };
         

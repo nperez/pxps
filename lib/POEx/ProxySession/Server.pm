@@ -56,8 +56,8 @@ class POEx::ProxySession::Server with POEx::Role::TCPServer
 
     method handle_inbound_data(ProxyMessage $data, WheelID $id) is Event
     {
-        my %result = ( 'type' => 'result', 'id' => $data->{id} );
-
+        my %result = ( type => 'result', id => $data->{id} );
+        
         given($data->{type})
         {
             when ('publish')
@@ -70,7 +70,6 @@ class POEx::ProxySession::Server with POEx::Role::TCPServer
 
                 if($@)
                 {
-                    warn "######################### ERROR: $@";
                     @result{'success', 'payload'} = ( 0, nfreeze( \$@ ) );
                     $self->get_wheel($id)->put(\%result);
                     return;
@@ -125,15 +124,26 @@ class POEx::ProxySession::Server with POEx::Role::TCPServer
                     return;
                 }
 
+                return;
             }
             when ('result')
             {
-                my $to_id = $self->delete_pending($id);
+                if(!$self->has_pending($data->{id}))
+                {
+                    warn q|Received an unexpected result message|;
+                    return;
+                }
+
+                my $to_id = $self->delete_pending($data->{id});
                 $self->get_wheel($to_id)->put($data);
                 return;
             }
+            default
+            {
+                warn 'UNKNOWN TYPE?: ' . $data->{type};
+            }
         }
-
+        
         $self->get_wheel($id)->put(\%result);
     }
 
@@ -141,7 +151,7 @@ class POEx::ProxySession::Server with POEx::Role::TCPServer
     {
         my $payload = thaw($data->{payload});
 
-        my $session = $payload->{session};
+        my $session = $payload->{session_alias};
         die "Session name required"
             if not defined($session);
         
@@ -155,21 +165,25 @@ class POEx::ProxySession::Server with POEx::Role::TCPServer
     {
         my $payload = thaw($data->{payload});
 
-        my $session = $payload->{session};
+        my $alias = $payload->{session_alias};
+        die "Session alias required"
+            if not defined($alias);
+        
+        die "Session '$alias' already exists"
+            if $self->has_session($alias);
+        
+        my $name = $payload->{session_name};
         die "Session name required"
-            if not defined($session);
-        
-        die "Session '$session' already exists"
-            if $self->has_session($session);
-        
+            if not defined($name);
+
         my $meta = $payload->{meta};
         bless($meta, 'Moose::Meta::Class');
 
         die 'Moose::Meta::Class required'
             if not blessed($meta) or
             not $meta->isa('Moose::Meta::Class');
-
-        $self->set_session($session, { meta => $meta, wheel => $id });
+        
+        $self->set_session($alias, { name => $name, meta => $meta, wheel => $id });
     }
 
     method subscribe_session(Str $session_name)
@@ -183,12 +197,16 @@ class POEx::ProxySession::Server with POEx::Role::TCPServer
     method deliver_message(ProxyMessage $data, WheelID $id)
     {
         my $session = $data->{to};
-
+        
         die "Session '$session' does not exist"
             if not $self->has_session($session);
         
-        my $wheel_id = $self->get_session($session)->{wheel};
-        $self->set_pending($wheel_id, $id);
+        my $lookup = $self->get_session($session);
+        
+        $data->{to} = $lookup->{name};
+        my $wheel_id = $lookup->{wheel};
+        
+        $self->set_pending($data->{id}, $id);
         $self->get_wheel($wheel_id)->put($data);
     }
 }

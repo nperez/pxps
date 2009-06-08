@@ -1,4 +1,4 @@
-use Test::More('no_plan');
+use Test::More('tests', 14);
 use MooseX::Declare;
 
 BEGIN
@@ -12,24 +12,25 @@ use POE;
 class Foo with POEx::Role::SessionInstantiation
 {
     use aliased 'POEx::Role::Event';
+    use aliased 'POEx::Role::ProxyEvent';
     use POEx::Types(':all');
     
     method setup(WheelID :$connection_id) is Event
     {
         Test::More::pass('Foo::setup called');
-
+        
         $self->post
         (
             'Client',
             'publish',
             connection_id   => $connection_id,
-            session_name    => 'FooSession',
+            session_alias    => 'FooSession',
             session         => $self,
             return_event    => 'handle_publish'
         );
     }
 
-    method handle_publish(Bool :$success, Str :$session_name, Ref :$payload?) is Event
+    method handle_publish(Bool :$success, Str :$session_alias, Ref :$payload?) is Event
     {
         if($success)
         {
@@ -43,17 +44,17 @@ class Foo with POEx::Role::SessionInstantiation
         }
     }
 
-    method foo(Str $arg1) is Event { Test::More::pass('Foo::foo called'); }
-    method bar(Int $arg1) is Event { Test::More::pass('Foo::bar called'); }
-    method yar(Bool $blat) is Event
+    method foo(Str $arg1) is (Event, ProxyEvent) { Test::More::pass('Foo::foo called'); }
+    method bar(Int $arg1) is (Event, ProxyEvent) { Test::More::pass('Foo::bar called'); }
+    method yar(Bool $blat) is (Event, ProxyEvent)
     { 
         Test::More::pass('Foo::yar called'); 
         $self->post
         (
             'Client',
             'rescind',
-            'FooSession',
-            'handle_rescind',
+            session => $self,
+            return_event => 'handle_rescind',
         );
     }
 
@@ -63,6 +64,8 @@ class Foo with POEx::Role::SessionInstantiation
         {
             Test::More::pass('rescind successful');
             $self->post('Tester', 'finish');
+            $self->clear_alias;
+            $self->poe->kernel->detach_myself;
         }
         else
         {
@@ -152,21 +155,21 @@ class Tester with POEx::Role::SessionInstantiation
 
             $self->post
             (
-                'FoosSession',
+                'FooSession',
                 'foo',
                 'string',
             );
 
             $self->post
             (
-                'FoosSession',
+                'FooSession',
                 'bar',
                 1,
             );
 
             $self->post
             (
-                'FoosSession',
+                'FooSession',
                 'yar',
                 0,
             );
@@ -181,10 +184,15 @@ class Tester with POEx::Role::SessionInstantiation
     method finish() is Event
     {
         Test::More::pass('finish called');
-        $self->server->clear_socket_factory;
-        $self->server->clear_wheels;
-        $self->client->clear_socket_factory;
-        $self->client->clear_wheels;
+        $self->clear_alias;
+        $self->post('Client', 'unsubscribe', session_name => 'FooSession', return_event => 'done');
+    }
+
+    method done() is Event
+    {
+        Test::More::pass('all done');
+        $self->post('Server', 'shutdown');
+        $self->post('Client', 'shutdown');
     }
 }
 
