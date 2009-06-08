@@ -1,4 +1,6 @@
 use 5.010;
+use warnings;
+use strict;
 
 use MooseX::Declare;
 $Storable::forgive_me = 1;
@@ -226,9 +228,7 @@ class POEx::ProxySession::Client with POEx::Role::TCPClient
                 bless($method, MXMSMethod);
                 
                 $args{name} = $name;
-                warn "BEFORE HERE1";
                 $args{package_name} = $self->meta->name;
-                warn "AFTER HERE1";
                 $args{signature} = $method->signature // '(@args)';
                 $args{return_signature} = $method->return_signature if defined $method->return_signature;
                 $args{body} = $code;
@@ -240,13 +240,14 @@ class POEx::ProxySession::Client with POEx::Role::TCPClient
                     $args{traits} = $method->traits;
                 }
                 
-                warn "BEFORE HERE2";
-                warn 'SIGNATURE: ' . $args{signature};
-                warn 'RETURN_SIG: ' . $args{return_signature};
+                use Data::Dumper;
+                {
+                    no strict 'refs';
+                    warn 'STASH: '.Dumper(\%{$self->meta->name.'::'});
+                }
+                warn 'ARGS: ' . Dumper(\%args);
                 $DB::single = 1;
-                warn 'POEx::Types::Session'->name;
                 my $new_meth = MXMSMethod->wrap(%args);
-                warn "AFTER HERE2";
                 Event->meta->apply($new_meth) if not does_role($new_meth, Event);
                 $anon->add_method($name, $new_meth);
             }
