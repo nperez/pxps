@@ -56,150 +56,111 @@ class POEx::ProxySession::Server with POEx::Role::TCPServer
 
     method handle_inbound_data(ProxyMessage $data, WheelID $id) is Event
     {
-        my %result = ( type => 'result', id => $data->{id} );
-        
         given($data->{type})
         {
             when ('publish')
             {
-                eval
-                {
-                    $self->publish_session($data, $id);
-                    $result{success} = 1;
-                };
-
-                if($@)
-                {
-                    @result{'success', 'payload'} = ( 0, nfreeze( \$@ ) );
-                    $self->get_wheel($id)->put(\%result);
-                    return;
-                }
+                $self->yield('publish_session', $data, $id);
             }
             when ('rescind')
             {
-                eval
-                {
-                    $self->rescind_session($data, $id);
-                    $result{success} = 1;
-                };
-
-                if($@)
-                {
-                    @result{'success', 'payload'} = ( 0, nfreeze( \$@ ) );
-                    $self->get_wheel($id)->put(\%result);
-                    return;
-                }
+                $self->yield('rescind_session', $data, $id);
             }
             when ('listing')
             {
-                @result{'success', 'payload'} = ( 1, nfreeze( [$self->all_session_names] ) );
-                $self->get_wheel($id)->put(\%result);
+                $self->yield('get_listing', $data, $id);
             }
             when ('subscribe')
             {
-                eval
-                {
-                    @result{'success', 'payload'} = ( 1, nfreeze( $self->subscribe_session($data->{to}) ) );
-                };
-
-                if($@)
-                {
-                    @result{'success', 'payload'} = ( 0, nfreeze( \$@ ) );
-                    $self->get_wheel($id)->put(\%result);
-                    return;
-                }
-
+                $self->yield('subscribe_session', $data, $id);
             }
             when ('deliver')
             {
-                eval
-                {
-                    $self->deliver_message($data, $id);
-                };
-                
-                if($@)
-                {
-                    @result{'success', 'payload'} = ( 0, nfreeze( \$@ ) );
-                    $self->get_wheel($id)->put(\%result);
-                    return;
-                }
-
-                return;
+                $self->yield('deliver_message', $data, $id);
             }
             when ('result')
             {
-                if(!$self->has_pending($data->{id}))
-                {
-                    warn q|Received an unexpected result message|;
-                    return;
-                }
-
-                my $to_id = $self->delete_pending($data->{id});
-                $self->get_wheel($to_id)->put($data);
-                return;
+                $self->yield('handle_pending', $data, $id);
             }
             default
             {
-                warn 'UNKNOWN TYPE?: ' . $data->{type};
+                my $type = $data->{type};
+                $self->yield('return_error', $data, $id, "Unknown message type '$type'");
             }
         }
-        
-        $self->get_wheel($id)->put(\%result);
     }
 
-    method rescind_session(ProxyMessage $data, WheelID $id)
+    method rescind_session(ProxyMessage $data, WheelID $id) is Event
     {
         my $payload = thaw($data->{payload});
-
         my $session = $payload->{session_alias};
-        die "Session name required"
-            if not defined($session);
-        
-        die "Session '$session' doesn't exist"
-            if not $self->has_session($session);
-        
-        $self->delete_session($session);
+
+        if(!$session)
+        {
+            $self->yield('return_error', $data, $id, 'Session alias is required');
+        }
+        elsif(!$self->has_session($session))
+        {
+            $self->yield('return_error', $data, $id, "Session '$session' doesn't exist");
+        }
+        else
+        {
+            $self->delete_session($session);
+            $self->yield('return_success', $data, $id);
+        }
     }
     
-    method publish_session(ProxyMessage $data, WheelID $id)
+    method publish_session(ProxyMessage $data, WheelID $id) is Event
     {
         my $payload = thaw($data->{payload});
 
         my $alias = $payload->{session_alias};
-        die "Session alias required"
-            if not defined($alias);
-        
-        die "Session '$alias' already exists"
-            if $self->has_session($alias);
-        
         my $name = $payload->{session_name};
-        die "Session name required"
-            if not defined($name);
-
         my $meta = $payload->{meta};
-        bless($meta, 'Moose::Meta::Class');
 
-        die 'Moose::Meta::Class required'
-            if not blessed($meta) or
-            not $meta->isa('Moose::Meta::Class');
-        
-        $self->set_session($alias, { name => $name, meta => $meta, wheel => $id });
+        if(!$alias)
+        {
+            $self->yield('return_error', $data, $id, 'Session alias must be defined');
+        }
+        elsif($self->has_session($alias))
+        {
+            $self->yield('return_error', $data, $id, "Session '$alias' already exists");
+        }
+        elsif(!$name)
+        {
+            $self->yield('return_error', $data, $id, 'Session name is required');
+        }
+        else
+        {
+            bless($meta, 'Moose::Meta::Class');
+            $self->set_session($alias, { name => $name, meta => $meta, wheel => $id });
+            $self->yield('return_success', $data, $id, \$alias);
+        }
     }
 
-    method subscribe_session(Str $session_name)
+    method subscribe_session(ProxyMessage $data, WheelID $id) is Event
     {
-        die "Session '$session_name' does not exist"
-            if not $self->has_session($session_name);
+        my $session_name = $data->{to};
+        if(!$self->has_session($session_name))
+        {
+            $self->return_error($data, $id, "Session '$session_name' does not exist");
+            return;
+        }
 
-        return { session => $session_name, meta => $self->get_session($session_name)->{meta} };
+        my $result = { session => $session_name, meta => $self->get_session($session_name)->{meta} };
+
+        $self->return_success($data, $id, $result);
     }
 
-    method deliver_message(ProxyMessage $data, WheelID $id)
+    method deliver_message(ProxyMessage $data, WheelID $id) is Event
     {
         my $session = $data->{to};
         
-        die "Session '$session' does not exist"
-            if not $self->has_session($session);
+        if(!$self->has_session($session))
+        {
+            $self->send_error($data, $id, "Session '$session' does not exist");
+            return;
+        }
         
         my $lookup = $self->get_session($session);
         
@@ -208,6 +169,36 @@ class POEx::ProxySession::Server with POEx::Role::TCPServer
         
         $self->set_pending($data->{id}, $id);
         $self->get_wheel($wheel_id)->put($data);
+    }
+
+    method handle_pending(ProxyMessage $data, WheelID $id) is Event
+    {
+        if(!$self->has_pending($data->{id}))
+        {
+            warn q|Received an unexpected result message|;
+            return;
+        }
+
+        my $to_id = $self->delete_pending($data->{id});
+        $self->get_wheel($to_id)->put($data);
+    }
+
+    method get_listing(ProxyMessage $data, WheelID $id) is Event
+    {
+        $self->yield('return_success', $data, $id, [ $self->all_session_names ]);
+    }
+
+    method return_error(ProxyMessage $data, WheelID $id, Str $msg) is Event
+    {
+        my $result = { success => 0, type => 'result', id => $data->{id}, payload => nfreeze(\$msg) };
+        $self->get_wheel($id)->put($result);
+    }
+
+    method return_success(ProxyMessage $data, WheelID $id, Ref $payload?) is Event
+    {
+        my $result = { success => 1, type => 'result', id => $data->{id} } ; 
+        $result->{payload} = nfreeze($payload) if defined($payload);
+        $self->get_wheel($id)->put($result);
     }
 }
 
