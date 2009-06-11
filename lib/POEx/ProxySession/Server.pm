@@ -3,7 +3,7 @@ use 5.010;
 use MooseX::Declare;
 $Storable::forgive_me = 1;
 
-class POEx::ProxySession::Server with POEx::Role::TCPServer
+class POEx::ProxySession::Server with (POEx::Role::TCPServer, POEx::ProxySession::MessageSender)
 {
     use 5.010;
     use POEx::ProxySession::Types(':all');
@@ -29,24 +29,6 @@ class POEx::ProxySession::Server with POEx::Role::TCPServer
             keys    => 'all_session_names',
             exists  => 'has_session',
         }
-    );
-
-    has pending =>
-    (
-        metaclass   => 'MooseX::AttributeHelpers::Collection::Hash',
-        isa         => HashRef,
-        lazy        => 1,
-        default     => sub { {} },
-        clearer     => 'clear_pending',
-        provides    => 
-        {
-            get     => 'get_pending',
-            set     => 'set_pending',
-            delete  => 'delete_pending',
-            count   => 'count_pending',
-            exists  => 'has_pending',
-        }
-
     );
 
     after _start(@args) is Event

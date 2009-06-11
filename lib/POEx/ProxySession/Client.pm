@@ -3,7 +3,7 @@ use 5.010;
 use MooseX::Declare;
 $Storable::forgive_me = 1;
 
-class POEx::ProxySession::Client with POEx::Role::TCPClient is dirty
+class POEx::ProxySession::Client with (POEx::Role::TCPClient, POEx::ProxySession::MessageSender) is dirty
 {
     use 5.010;
     use POEx::ProxySession::Types(':all');
@@ -16,29 +16,12 @@ class POEx::ProxySession::Client with POEx::Role::TCPClient is dirty
     use signatures;
     use Socket;
     use Scalar::Util;
+
     use aliased 'POEx::Role::Event';
     use aliased 'POEx::Role::ProxyEvent';
     use aliased 'MooseX::Method::Signatures::Meta::Method', 'MXMSMethod';
     use aliased 'Moose::Meta::Method';
 
-    has pending =>
-    (
-        metaclass   => 'MooseX::AttributeHelpers::Collection::Hash',
-        isa         => HashRef,
-        lazy        => 1,
-        default     => sub { {} },
-        clearer     => 'clear_pending',
-        provides    => 
-        {
-            get     => 'get_pending',
-            set     => 'set_pending',
-            delete  => 'delete_pending',
-            count   => 'count_pending',
-            exists  => 'has_pending',
-        }
-
-    );
-    
     has subscriptions =>
     (
         metaclass   => 'MooseX::AttributeHelpers::Collection::Hash',
@@ -74,12 +57,6 @@ class POEx::ProxySession::Client with POEx::Role::TCPClient is dirty
             exists  => 'has_publication',
         }
     );
-
-    method next_message_id() returns (Int)
-    {
-        state $id = 0;
-        return $id++;
-    }
 
     after _start(@args) is Event
     {
@@ -487,28 +464,4 @@ class POEx::ProxySession::Client with POEx::Role::TCPClient is dirty
         );
     }
     
-    method send_result(Bool :$success, ProxyMessage :$original, Ref :$payload, WheelID :$wheel_id)
-    {
-        $self->get_wheel($wheel_id)->put
-        (
-            {
-                id      => $original->{id},
-                type    => 'result', 
-                success => $success,
-                payload => nfreeze($payload),
-            }
-        );
-    }
-
-    method return_to_sender
-    (   ProxyMessage :$message, 
-        WheelID :$wheel_id, 
-        SessionID :$return_session, 
-        Str :$return_event, 
-        Ref :$tag?
-    ) is Event
-    {
-        $self->set_pending($message->{id}, { tag => $tag, return_session => $return_session, return_event => $return_event });
-        $self->get_wheel($wheel_id)->put($message);
-    }
 }
