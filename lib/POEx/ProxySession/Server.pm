@@ -67,7 +67,14 @@ class POEx::ProxySession::Server with (POEx::Role::TCPServer, POEx::ProxySession
             default
             {
                 my $type = $data->{type};
-                $self->yield('return_error', $data, $id, "Unknown message type '$type'");
+                $self->yield
+                (
+                    'send_result', 
+                    success     => 0,
+                    original    => $data, 
+                    wheel_id    => $id, 
+                    payload     => \"Unknown message type '$type'"
+                );
             }
         }
     }
@@ -79,16 +86,37 @@ class POEx::ProxySession::Server with (POEx::Role::TCPServer, POEx::ProxySession
 
         if(!$session)
         {
-            $self->yield('return_error', $data, $id, 'Session alias is required');
+            $self->yield
+            (
+                'send_result', 
+                success     => 0, 
+                original    => $data, 
+                wheel_id    => $id,
+                payload     => \'Session alias is required', 
+            );
         }
         elsif(!$self->has_session($session))
         {
-            $self->yield('return_error', $data, $id, "Session '$session' doesn't exist");
+            $self->yield
+            (
+                'send_result', 
+                success     => 0, 
+                original    => $data, 
+                wheel_id    => $id,
+                payload     => \"Session '$session' doesn't exist", 
+            );
         }
         else
         {
             $self->delete_session($session);
-            $self->yield('return_success', $data, $id);
+            
+            $self->yield
+            (
+                'send_result', 
+                success     => 1, 
+                original    => $data, 
+                wheel_id    => $id
+            );
         }
     }
     
@@ -102,21 +130,50 @@ class POEx::ProxySession::Server with (POEx::Role::TCPServer, POEx::ProxySession
 
         if(!$alias)
         {
-            $self->yield('return_error', $data, $id, 'Session alias must be defined');
+            $self->yield
+            (
+                'send_result', 
+                success     => 0,
+                original    => $data, 
+                wheel_id    => $id, 
+                payload     => \'Session alias must be defined'
+            );
         }
         elsif($self->has_session($alias))
         {
-            $self->yield('return_error', $data, $id, "Session '$alias' already exists");
+            $self->yield
+            (
+                'send_result',
+                success     => 0,
+                original    => $data, 
+                wheel_id    => $id, 
+                payload     => \"Session '$alias' already exists"
+            );
         }
         elsif(!$name)
         {
-            $self->yield('return_error', $data, $id, 'Session name is required');
+            $self->yield
+            (
+                'send_result', 
+                success     => 0,
+                original    => $data, 
+                wheel_id    => $id, 
+                payload     => \'Session name is required'
+            );
         }
         else
         {
             bless($meta, 'Moose::Meta::Class');
             $self->set_session($alias, { name => $name, meta => $meta, wheel => $id });
-            $self->yield('return_success', $data, $id, \$alias);
+            
+            $self->yield
+            (
+                'send_result', 
+                success     => 1,
+                original    => $data, 
+                wheel_id    => $id,
+                payload     => \$alias
+            );
         }
     }
 
@@ -125,13 +182,27 @@ class POEx::ProxySession::Server with (POEx::Role::TCPServer, POEx::ProxySession
         my $session_name = $data->{to};
         if(!$self->has_session($session_name))
         {
-            $self->return_error($data, $id, "Session '$session_name' does not exist");
+            $self->yield
+            (
+                'send_result', 
+                success     => 0, 
+                original    => $data, 
+                wheel_id    => $id,
+                payload     => \"Session '$session_name' doesn't exist", 
+            );
             return;
         }
 
         my $result = { session => $session_name, meta => $self->get_session($session_name)->{meta} };
 
-        $self->return_success($data, $id, $result);
+        $self->yield
+        (
+            'send_result', 
+            success     => 1,
+            original    => $data, 
+            wheel_id    => $id, 
+            payload     => $result
+        );
     }
 
     method deliver_message(ProxyMessage $data, WheelID $id) is Event
@@ -140,10 +211,16 @@ class POEx::ProxySession::Server with (POEx::Role::TCPServer, POEx::ProxySession
         
         if(!$self->has_session($session))
         {
-            $self->send_error($data, $id, "Session '$session' does not exist");
+            $self->yield
+            (
+                'send_result', 
+                success     => 0, 
+                original    => $data, 
+                wheel_id    => $id,
+                payload     => \"Session '$session' doesn't exist", 
+            );
             return;
         }
-        
         my $lookup = $self->get_session($session);
         
         $data->{to} = $lookup->{name};
@@ -167,20 +244,14 @@ class POEx::ProxySession::Server with (POEx::Role::TCPServer, POEx::ProxySession
 
     method get_listing(ProxyMessage $data, WheelID $id) is Event
     {
-        $self->yield('return_success', $data, $id, [ $self->all_session_names ]);
-    }
-
-    method return_error(ProxyMessage $data, WheelID $id, Str $msg) is Event
-    {
-        my $result = { success => 0, type => 'result', id => $data->{id}, payload => nfreeze(\$msg) };
-        $self->get_wheel($id)->put($result);
-    }
-
-    method return_success(ProxyMessage $data, WheelID $id, Ref $payload?) is Event
-    {
-        my $result = { success => 1, type => 'result', id => $data->{id} } ; 
-        $result->{payload} = nfreeze($payload) if defined($payload);
-        $self->get_wheel($id)->put($result);
+        $self->yield
+        (
+            'return_success', 
+            success     => 1,
+            original    => $data, 
+            wheel_id    => $id, 
+            payload     => [ $self->all_session_names ]
+        );
     }
 }
 

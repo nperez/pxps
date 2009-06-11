@@ -15,7 +15,6 @@ class POEx::ProxySession::Client with (POEx::Role::TCPClient, POEx::ProxySession
     use Storable('thaw', 'nfreeze');
     use signatures;
     use Socket;
-    use Scalar::Util;
 
     use aliased 'POEx::Role::Event';
     use aliased 'POEx::Role::ProxyEvent';
@@ -170,7 +169,7 @@ class POEx::ProxySession::Client with (POEx::Role::TCPClient, POEx::ProxySession
         
         my %data = 
         (
-            id => $self->next_message_id,
+            id => -1,
             type => 'subscribe', 
             to => $to_session, 
             payload => nfreeze(\$to_session) 
@@ -262,13 +261,11 @@ class POEx::ProxySession::Client with (POEx::Role::TCPClient, POEx::ProxySession
                 # build our closure proxy method
                 my $code = sub ($obj, @args)
                 {
-                    my $outside = $self;
-                    Scalar::Util::weaken($outside);
                     my $load = { event => $name, args => \@args };
 
                     my $msg =
                     {
-                        id => $outside->next_message_id,
+                        id => -1,
                         type => 'deliver',
                         to => $session_name,
                         payload => nfreeze($load),
@@ -370,7 +367,7 @@ class POEx::ProxySession::Client with (POEx::Role::TCPClient, POEx::ProxySession
         }
         my %data = 
         (
-            id => $self->next_message_id,
+            id => -1,
             type => 'publish',
             payload => $frozen,
         );
@@ -430,7 +427,7 @@ class POEx::ProxySession::Client with (POEx::Role::TCPClient, POEx::ProxySession
         (
             message         => 
             {
-                id => $self->next_message_id,
+                id => -1,
                 type => 'rescind', 
                 payload => nfreeze( { session_alias => $hash->{alias} } ) 
             }, 

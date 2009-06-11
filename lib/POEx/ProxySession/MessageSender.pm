@@ -36,17 +36,18 @@ role POEx::ProxySession::MessageSender
         return $id++;
     }
     
-    method send_result(Bool :$success, ProxyMessage :$original, Ref :$payload, WheelID :$wheel_id) is Event
+    method send_result(Bool :$success, ProxyMessage :$original, Ref :$payload?, WheelID :$wheel_id) is Event
     {
-        $self->get_wheel($wheel_id)->put
-        (
-            {
-                id      => $original->{id},
-                type    => 'result', 
-                success => $success,
-                payload => nfreeze($payload),
-            }
-        );
+        my $msg = 
+        {
+            id      => $original->{id},
+            type    => 'result', 
+            success => $success,
+        };
+
+        $msg->{payload} = nfreeze($payload) if $payload;
+
+        $self->get_wheel($wheel_id)->put($msg);
     }
 
     method send_message(Str :$type, Ref :$payload, WheelID :$wheel_id) is Event
@@ -63,6 +64,7 @@ role POEx::ProxySession::MessageSender
         Ref :$tag?
     ) is Event
     {
+        $message->{id} = $self->next_message_id();
         $self->set_pending($message->{id}, { tag => $tag, return_session => $return_session, return_event => $return_event });
         $self->get_wheel($wheel_id)->put($message);
     }
