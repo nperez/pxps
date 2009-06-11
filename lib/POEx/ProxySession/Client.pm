@@ -405,7 +405,7 @@ class POEx::ProxySession::Client with (POEx::Role::TCPClient, POEx::ProxySession
         }
 
         my %args = ( success => $data->{success}, session_alias => $tag->{session_alias} );
-        $args{payload} = thaw($tag->{payload}) if defined($tag->{payload});
+        $args{payload} = thaw($data->{payload}) if defined($data->{payload});
 
         $self->post
         (
@@ -451,11 +451,42 @@ class POEx::ProxySession::Client with (POEx::Role::TCPClient, POEx::ProxySession
         }
 
         my %args = ( success => $data->{success}, session_name => $tag->{session} );
-        $args{payload} = thaw($tag->{payload}) if defined($tag->{payload});
+        $args{payload} = thaw($data->{payload}) if defined($data->{payload});
 
         $self->post
         (
             $tag->{return_session}, 
+            $tag->{return_event},
+            %args
+        );
+    }
+
+    method server_listing(WheelID :$connection_id, SessionAlias :$return_session?, Str :$return_event) is Event
+    {
+        $self->return_to_sender
+        (
+            message         =>
+            {
+                id      => -1,
+                type    => 'listing',
+            },
+            wheel_id        => $connection_id,
+            return_session  => $self->ID,
+            return_event    => 'handle_on_listing',
+            tag             =>
+            {
+                return_session  => $return_session // $self->poe->sender,
+                return_event    => $return_event,
+            },
+        );
+    }
+
+    method handle_on_listing(ProxyMessage $data, WheelID $id, HashRef $tag) is Event
+    {
+        my %args = ( success => $data->{success}, payload => thaw($data->{payload}) );
+        $self->post
+        (
+            $tag->{return_session},
             $tag->{return_event},
             %args
         );

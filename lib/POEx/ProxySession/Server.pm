@@ -246,7 +246,7 @@ class POEx::ProxySession::Server with (POEx::Role::TCPServer, POEx::ProxySession
     {
         $self->yield
         (
-            'return_success', 
+            'send_result', 
             success     => 1,
             original    => $data, 
             wheel_id    => $id, 

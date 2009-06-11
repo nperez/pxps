@@ -1,4 +1,4 @@
-use Test::More('tests', 14);
+use Test::More('tests', 15);
 use MooseX::Declare;
 
 BEGIN
@@ -152,6 +152,27 @@ class Tester with POEx::Role::SessionInstantiation
         if($success)
         {
             Test::More::pass('Subscription successful');
+            $self->post
+            (
+                'Client',
+                'server_listing',
+                connection_id   => $self->connection_id,
+                return_event    => 'post_listing',
+            );
+
+        }
+        else
+        {
+            Test::More::fail('subscribe failed');
+            Test::More::BAIL_OUT($$payload);
+        }
+    }
+
+    method post_listing(Bool :$success, ArrayRef :$payload) is Event
+    {
+        if($success && (@$payload == 1) && $payload->[0] eq 'FooSession')
+        {
+            Test::More::pass('Listing successful');
 
             $self->post
             (
@@ -176,8 +197,8 @@ class Tester with POEx::Role::SessionInstantiation
         }
         else
         {
-            Test::More::fail('subscribe failed');
-            Test::More::BAIL_OUT($$payload);
+            Test::More::fail('listing failed');
+            Test::More::BAIL_OUT('Something horrible went wrong here');
         }
     }
 
