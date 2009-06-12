@@ -1,9 +1,11 @@
 package POEx::ProxySession::Types;
+use warnings;
+use strict;
 use 5.010;
 
 #ABSTRACT: Types for use within the ProxySession environment
 
-use MooseX::Types -declare => [ qw/ ProxyMessage / ];
+use MooseX::Types;
 use MooseX::Types::Moose(':all');
 use MooseX::Types::Structured('Dict', 'Optional');
 
@@ -38,13 +40,40 @@ subtype 'ProxyMessage',
         success => Optional[Bool],
     ],
     where 
-    { 
-        ( $_->{type} eq 'deliver'   && defined($_->{to})        )   ||
-        ( $_->{type} eq 'result'    && defined($_->{success})   )   ||
-        ( $_->{type} eq 'subscribe' && defined($_->{to})        )   ||
-        ( $_->{type} eq 'publish'   && defined($_->{payload})   )   ||
-        ( $_->{type} eq 'rescind'   && defined($_->{payload})   )   ||
-        ( $_->{type} eq 'listing' )
+    {
+        my $hash = $_;
+        given($hash->{type})
+        {
+            when('deliver')
+            {
+                return defined($hash->{to});
+            }
+            when('result')
+            {
+                return defined($hash->{success});
+            }
+            when('subscribe')
+            {
+                return defined($hash->{to});
+            }
+            when('publish')
+            {
+                return defined($hash->{payload});
+            }
+            when('rescind')
+            {
+                return defined($hash->{payload});
+            }
+            when('listing')
+            {
+                return 1;
+            }
+            default
+            {
+                # we do this so that this may be used as a base type
+                return 1;
+            }
+        }
     };
         
 1;
