@@ -3,7 +3,7 @@ use 5.010;
 
 #ABSTRACT: Types for use within the ProxySession environment
 
-use MooseX::Types -declare => [ qw/ ProxySession / ];
+use MooseX::Types -declare => [ qw/ ProxyMessage / ];
 use MooseX::Types::Moose(':all');
 use MooseX::Types::Structured('Dict', 'Optional');
 
