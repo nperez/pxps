@@ -9,3 +9,8 @@ role POEx::Role::ProxyEvent
 }
 1;
 __END__
+=head1 DESCRIPTION
+
+This role is merely a decorator for methods to indicate that the method should
+be available for proxy.
+

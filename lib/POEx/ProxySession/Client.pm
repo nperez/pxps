@@ -1,7 +1,112 @@
+package POEx::ProxySession::Client;
 use 5.010;
+
+#ABSTRACT: Proxies remote, published Sessions, or publishes, local Sessions for subscription
 
 use MooseX::Declare;
 $Storable::forgive_me = 1;
+
+=head1 SYNOPSIS
+
+    # on the publisher side
+    class Foo with POEx::Role::SessionInstantiation
+    {
+        use aliased 'POEx::Role::Event';
+        use aliased 'POEx::Role::ProxyEvent';
+        
+        # The event we want to expose
+        method yarg() {  } is (Event, ProxyEvent)
+        
+        after _start(@args) is Event
+        {
+            POEx::ProxySession::Client->new
+            ( 
+                alias   => 'Client',
+                options => { trace => 1, debug => 1 },
+            );
+
+            $self->post
+            (
+                'Client', 
+                'connect', 
+                remote_address  => '127.0.0.1', 
+                remote_port     => 56789,
+                return_event    => 'post_connect'
+            );
+        }
+
+        method post_connect
+        (
+            WheelID :$connection_id, 
+            Str :$remote_address, 
+            Int :$remote_port
+        ) is Event
+        {
+            $self->post
+            (
+                'Client',
+                'publish',
+                connection_id   => $connection_id,
+                session_alias   => 'FooSession',
+                session         => $self,
+                return_event    => 'check_publish'
+            );
+        }
+
+        .....
+    }
+
+    # on the subscriber side
+    class Bar with POEx::Role::SessionInstantiation
+    {
+        use aliased 'POEx::Role::Event';
+        use aliased 'POEx::Role::ProxyEvent';
+        
+        after _start(@args) is Event
+        {
+            POEx::ProxySession::Client->new
+            ( 
+                alias   => 'Client',
+                options => { trace => 1, debug => 1 },
+            );
+
+            $self->post
+            (
+                'Client', 
+                'connect', 
+                remote_address  => '127.0.0.1', 
+                remote_port     => 56789,
+                return_event    => 'post_connect'
+            );
+        }
+
+        method post_connect
+        (
+            WheelID :$connection_id, 
+            Str :$remote_address, 
+            Int :$remote_port
+        ) is Event
+        {
+            $self->post
+            (
+                'Client',
+                'subscribe',
+                connection_id   => $connection_id,
+                to_session      => 'FooSession',
+                return_event    => 'post_subscription',
+            );
+        }
+        
+        method post_subscription(Bool :$success, Str :$session_name, Ref :$payload?) is Event
+        {
+            if($success)
+            {
+                $self->post('FooSession', 'yarg');
+            }
+        }
+    }
+
+=cut
 
 class POEx::ProxySession::Client with (POEx::Role::TCPClient, POEx::ProxySession::MessageSender) is dirty
 {
@@ -21,6 +126,32 @@ class POEx::ProxySession::Client with (POEx::Role::TCPClient, POEx::ProxySession
     use aliased 'MooseX::Method::Signatures::Meta::Method', 'MXMSMethod';
     use aliased 'Moose::Meta::Method';
 
+=attr subscriptions metaclass => MooseX::AttributeHelpers::Collection::Hash
+
+This attribute is used to store the various subscriptions made through the
+client. It has no accessors beyond what are defined in the provides mechanism.
+
+    provides    => 
+    {
+        get     => 'get_subscription',
+        set     => 'set_subscription',
+        delete  => 'delete_subscription',
+        count   => 'count_subscriptions',
+        keys    => 'all_subscription_names',
+        exists  => 'has_subscription',
+    }
+
+Each instance of a subscription is actually stored as a hash with the following
+keys:
+
+    Subscription =>
+    {
+        meta    => isa Moose::Meta::Class,
+        wheel   => isa WheelID
+    }
+
+=cut
+
     has subscriptions =>
     (
         metaclass   => 'MooseX::AttributeHelpers::Collection::Hash',
@@ -38,7 +169,34 @@ class POEx::ProxySession::Client with (POEx::Role::TCPClient, POEx::ProxySession
             exists  => 'has_subscription',
         }
     );
+
+
+=attr publications metaclass => MooseX::AttributeHelpers::Collection::Hash
+
+This attribute is used to store all publications made through the client. It 
+has no accessors beyond what are defined in the provides mechanism.
     
+    provides    => 
+    {
+        get     => 'get_publication',
+        set     => 'set_publication',
+        delete  => 'delete_publication',
+        count   => 'count_publications',
+        keys    => 'all_publication_names',
+        exists  => 'has_publication',
+    }
+
+Each instance of a publication is stored as a hash with the following keys:
+
+    Publication =>
+    {
+        meta            => isa Moose::Meta::Class,
+        wheel           => isa WheelID,
+        session_alias   => isa SessionAlias,
+    }
+
+=cut
+
     has publications =>
     (
         metaclass   => 'MooseX::AttributeHelpers::Collection::Hash',
@@ -57,10 +215,28 @@ class POEx::ProxySession::Client with (POEx::Role::TCPClient, POEx::ProxySession
         }
     );
 
+=method after _start(@args) is Event
+
+The _start method is advised to hardcode the filter to use as a 
+POE::Filter::Reference instance.
+
+=cut
+
     after _start(@args) is Event
     {
         $self->filter(POE::Filter::Reference->new());
     }
+
+=method around connect(Str :$remote_address,Int :$remote_port, SessionAlias|SessionID|Session|DoesSessionInstantiation :$return_session?,Str :$return_event) is Event
+
+The connect method is advised to add additional parameters in the form of a
+return session and return event to use once the connection has been 
+established.
+
+The return event will need the following signature:
+(WheelID :$connection_id, Str :$remote_address, Int :$remote_port)
+
+=cut
 
     around connect
     (
@@ -84,6 +260,13 @@ class POEx::ProxySession::Client with (POEx::Role::TCPClient, POEx::ProxySession
         );
     }
 
+=method after handle_on_connect(GlobRef $socket, Str $address, Int $port, WheelID $id) is Event
+
+handle_on_connect is advised to find the specified return session and event
+and post the message with the paramters received from the socketfactory
+
+=cut
+
     after handle_on_connect(GlobRef $socket, Str $address, Int $port, WheelID $id) is Event
     {
         my $addr = inet_ntoa($address);
@@ -106,6 +289,15 @@ class POEx::ProxySession::Client with (POEx::Role::TCPClient, POEx::ProxySession
             die "Connect finished for unknown address: $addr_port";
         }
     }
+
+=method handle_inbound_data(ProxyMessage $data, WheelID $id) is Event
+
+Our implementation of handle_inbound_data expects a ProxyMessage as data. Here 
+is where the handling and routing of messages lives. Only handles two types of
+ProxyMessage: result, and deliver. For more information on ProxyMessage types,
+see the POD in POEx::ProxySession::Types.
+
+=cut
 
     method handle_inbound_data(ProxyMessage $data, WheelID $id) is Event
     {
@@ -157,11 +349,28 @@ class POEx::ProxySession::Client with (POEx::Role::TCPClient, POEx::ProxySession
         }
     }
 
+=method subscribe(WheelID :$connection_id, SessionAlias :$to_session, SessionAlias|SessionID|Session|DoesSessionInstantiation :$return_session?,Str :$return_event) is Event
+
+subscribe sends a message out to the server, and the handler receives the 
+appropriate metadata and constructs a local, persistent session that proxies 
+posts back to the publisher. Once the session is finished constructing itself
+it will post a message to the provided return event.
+
+The return event must have the following signature:
+(Bool :$success, SessionAlias :$session_name, Ref :$payload)
+
+Since subscription can fail, $success will indicate whether it succeeded or not
+and if not $payload will be a scalar reference to a string explaining why.
+
+Otherwise, if subscription was successful, $payload will contain the original
+payload from the server containing the metadata.
+
+=cut
     method subscribe
     (
         WheelID :$connection_id,
         SessionAlias :$to_session, 
-        SessionAlias :$return_session?, 
+        SessionAlias|SessionID|Session|DoesSessionInstantiation :$return_session?, 
         Str :$return_event
     ) is Event
     {
@@ -326,7 +535,23 @@ class POEx::ProxySession::Client with (POEx::Role::TCPClient, POEx::ProxySession
         }
     }
 
-    method unsubscribe(SessionAlias :$session_name, SessionAlias :$return_session?, Str :$return_event) is Event
+=method unsubscribe(SessionAlias :$session_name, SessionAlias|SessionID|Session|DoesSessionInstantiation :$return_session?, Str :$return_event) is Event
+
+To unsubscribe from a proxied session, use this method. This will destroy the 
+session by removing its alias. Only pending events will keep the session alive.
+
+If it happens such that the session no longer exists, the return event will be 
+posted right away, other wise, _stop on the proxied session is advised to post
+the return event.
+
+=cut
+
+    method unsubscribe
+    (
+        SessionAlias :$session_name, 
+        SessionAlias|SessionID|Session|DoesSessionInstantiation :$return_session?, 
+        Str :$return_event
+    ) is Event
     {
         die "Unknown session '$session_name'"
             if not $self->has_subscription($session_name);
@@ -348,12 +573,41 @@ class POEx::ProxySession::Client with (POEx::Role::TCPClient, POEx::ProxySession
         $self->post($session_name, 'shutdown');
     }
 
+=method publish(WheelID :$connection_id, SessionAlias :$session_alias, DoesSessionInstantiation :$session, SessionAlias|SessionID|Session|DoesSessionInstantiation :$return_session?, Str :$return_event) is Event
+
+This method will publish a particular session to the server, such that other 
+clients can then subscribe.
+
+The connection_id is required to know where to send the publish message. Keep
+track of each connection_id received from connect() to know where publications
+should happen. The session_alias argument is how the session should be 
+addressed on the server. The alias will be used by subscribing clients.
+
+Currently, only sessions that are composed of POEx::Role::SessionInstantiation
+are supported and as such, a reference a session that does that role is 
+required to allow the proper introspection on the subscriber end.
+
+To indicate which methods should be proxied, simply decorate them with the 
+POEx::Role::ProxyEvent role. All other methods will be ignored in proxy 
+creation.
+
+The return event must have the following signature:
+(Bool :$success, SessionAlias :$session_alias, Ref :$payload?)
+
+Since publication can fail, $success will indicate whether it succeeded or not
+and if not $payload will be a scalar reference to a string explaining why.
+
+Otherwise, if publication was successful, $payload will contain the original
+payload from the server containing the metadata.
+
+=cut
+
     method publish
     (
         WheelID :$connection_id, 
         SessionAlias :$session_alias, 
         DoesSessionInstantiation :$session, 
-        SessionAlias :$return_session?,  
+        SessionAlias|SessionID|Session|DoesSessionInstantiation :$return_session?, 
         Str :$return_event
     ) is Event
     {
@@ -415,7 +669,25 @@ class POEx::ProxySession::Client with (POEx::Role::TCPClient, POEx::ProxySession
         );
     }
 
-    method rescind(DoesSessionInstantiation :$session, SessionAlias :$return_session?, Str :$return_event) is Event
+=method rescind(DoesSessionInstantiation :$session, SessionAlias|SessionID|Session|DoesSessionInstantiation :$return_session?, Str :$return_event) is Event
+
+To take back a publication, use this method and pass it the session reference.
+
+The return event must have the following signature:
+(Bool :$success, SessionAlias :$session_name, Ref :$payload?)
+
+Since rescinding can fail, $success will let you know if it did. And if it did,
+$payload will be a reference a string explaining why. Otherwise, payload will
+be undef.
+
+=cut
+
+    method rescind
+    (
+        DoesSessionInstantiation :$session, 
+        SessionAlias|SessionID|Session|DoesSessionInstantiation :$return_session?, 
+        Str :$return_event
+    ) is Event
     {
         my $name = $session->alias // $session->ID;
         die "Session '$name' is not currently published"
@@ -461,7 +733,23 @@ class POEx::ProxySession::Client with (POEx::Role::TCPClient, POEx::ProxySession
         );
     }
 
-    method server_listing(WheelID :$connection_id, SessionAlias :$return_session?, Str :$return_event) is Event
+=method server_listing(WheelID :$connection_id, SessionAlias|SessionID|Session|DoesSessionInstantiation :$return_session?, Str :$return_event) is Event
+
+server_listing will query a particular server for a list of all published 
+sessions that it knows about. It returns it as an array of session aliases
+suitable for subscription.
+
+The return event must have the following signature:
+(Bool :$success, ArrayRef :$payload)
+
+=cut
+
+    method server_listing
+    (
+        WheelID :$connection_id, 
+        SessionAlias|SessionID|Session|DoesSessionInstantiation :$return_session?, 
+        Str :$return_event
+    ) is Event
     {
         $self->return_to_sender
         (
@@ -491,5 +779,24 @@ class POEx::ProxySession::Client with (POEx::Role::TCPClient, POEx::ProxySession
             %args
         );
     }
-    
 }
+1;
+__END__
+=head1 DESCRIPTION
+
+POEx::ProxySession::Client enables remote sessions to interact with one another
+via a system of subscription and publication. Client works via introspection on
+Moose::Meta::Classes to build local, persistent sessions that proxy posts back
+to the publisher with the attendant method signatures.
+
+=head1 CAVEATS
+
+It should be noted that the transport mechanism makes use of Storable. That
+means that all of the various end points in a spawling system need to use the
+same version of Storable to make sure things serialize/deserialize correctly.
+
+Since Moose::Meta::Classes contain a lot of coderefs, and since MooseX::Declare
+does a lot of coderef munging, the choice was made to forego using the Storable
+ability to serialize coderefs via B::Deparse and just discard them. This means
+that encapsulation is broken on Moose::Meta::Class to access methods.
+
