@@ -412,6 +412,7 @@ payload from the server containing the metadata.
             my $anon = class with POEx::Role::SessionInstantiation
             {
                 use POEx::Types(':all');
+                use POEx::ProxySession::Types(':all');
                 use aliased 'POEx::Role::Event';
                 use Storable('thaw');
                 after _start(@args) is Event

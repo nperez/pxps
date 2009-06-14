@@ -5,7 +5,7 @@ use 5.010;
 
 #ABSTRACT: Types for use within the ProxySession environment
 
-use MooseX::Types;
+use MooseX::Types -declare => ['ProxyMessage'];
 use MooseX::Types::Moose(':all');
 use MooseX::Types::Structured('Dict', 'Optional');
 
@@ -30,7 +30,7 @@ This type does not validate the contents of the payload.
 
 =cut
 
-subtype 'ProxyMessage',
+subtype ProxyMessage,
     as Dict
     [
         type => Str,
