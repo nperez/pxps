@@ -108,7 +108,7 @@ $Storable::forgive_me = 1;
 
 =cut
 
-class POEx::ProxySession::Client with (POEx::Role::TCPClient, POEx::ProxySession::MessageSender) is dirty
+class POEx::ProxySession::Client with (POEx::Role::TCPClient, POEx::ProxySession::MessageSender)
 {
     use 5.010;
     use POEx::ProxySession::Types(':all');
@@ -124,7 +124,6 @@ class POEx::ProxySession::Client with (POEx::Role::TCPClient, POEx::ProxySession
     use aliased 'POEx::Role::Event';
     use aliased 'POEx::Role::ProxyEvent';
     use aliased 'MooseX::Method::Signatures::Meta::Method', 'MXMSMethod';
-    use aliased 'Moose::Meta::Method';
 
 =attr subscriptions metaclass => MooseX::AttributeHelpers::Collection::Hash
 
@@ -411,10 +410,15 @@ payload from the server containing the metadata.
             
             my $anon = class with POEx::Role::SessionInstantiation
             {
+                use Class::MOP;
+                use MooseX::Types::Moose(':all');
                 use POEx::Types(':all');
                 use POEx::ProxySession::Types(':all');
+                use Storable('thaw', 'nfreeze');
+
                 use aliased 'POEx::Role::Event';
-                use Storable('thaw');
+
+
                 after _start(@args) is Event
                 {
                     $self->post
@@ -431,7 +435,6 @@ payload from the server containing the metadata.
 
                 method proxy_send_failure(ProxyMessage $data, WheelID $id, HashRef $tag) is Event
                 {
-                    use Data::Dumper;
                     warn 'A proxy call to '. $tag->{session_name} . ':'. $tag->{event_name} .
                     ' with the arguments [ ' . join(', ', @{ $tag->{args} }) . ' ] failed: '.
                     thaw($data->{payload}) if !$data->{success};
@@ -469,8 +472,9 @@ payload from the server containing the metadata.
                 bless($method, MXMSMethod);
                 
                 # build our closure proxy method
-                my $code = sub ($obj, @args)
+                my $code = sub
                 {
+                    my ($obj, @args) = @_;
                     my $load = { event => $name, args => \@args };
 
                     my $msg =
