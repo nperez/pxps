@@ -350,7 +350,7 @@ posts back to the publisher. Once the session is finished constructing itself
 it will post a message to the provided return event.
 
 The return event must have the following signature:
-(Bool :$success, SessionAlias :$session_name, Ref :$payload, Ref :$tag?)
+(WheelID :$connection_id, Bool :$success, SessionAlias :$session_name, Ref :$payload, Ref :$tag?)
 
 Since subscription can fail, $success will indicate whether it succeeded or not
 and if not $payload will be a scalar reference to a string explaining why.
