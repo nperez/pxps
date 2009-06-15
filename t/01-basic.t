@@ -1,4 +1,4 @@
-use Test::More('tests', 15);
+use Test::More('tests', 19);
 use MooseX::Declare;
 
 BEGIN
@@ -26,15 +26,17 @@ class Foo with POEx::Role::SessionInstantiation
             connection_id   => $connection_id,
             session_alias    => 'FooSession',
             session         => $self,
-            return_event    => 'handle_publish'
+            return_event    => 'handle_publish',
+            tag             => \'my_tag'
         );
     }
 
-    method handle_publish(Bool :$success, Str :$session_alias, Ref :$payload?) is Event
+    method handle_publish(Bool :$success, Str :$session_alias, Ref :$payload?, Ref :$tag?) is Event
     {
         if($success)
         {
             Test::More::pass('publish successful');
+            Test::More::is_deeply($tag, \'my_tag', 'test publish tag');
             $self->post('Tester', 'continue');
         }
         else
@@ -55,14 +57,16 @@ class Foo with POEx::Role::SessionInstantiation
             'rescind',
             session => $self,
             return_event => 'handle_rescind',
+            tag => \'tag_two'
         );
     }
 
-    method handle_rescind(Bool :$success, Str :$session_name, Ref :$payload?) is Event
+    method handle_rescind(Bool :$success, Str :$session_name, Ref :$payload?, Ref :$tag?) is Event
     {
         if($success)
         {
             Test::More::pass('rescind successful');
+            Test::More::is_deeply($tag, \'tag_two', 'test rescind tag');
             $self->post('Tester', 'finish');
             $self->clear_alias;
             $self->poe->kernel->detach_myself;
@@ -144,20 +148,23 @@ class Tester with POEx::Role::SessionInstantiation
             connection_id   => $self->connection_id,
             to_session      => 'FooSession',
             return_event    => 'post_subscription',
+            tag             => \'tag_three',
         );
     }
 
-    method post_subscription(Bool :$success, Str :$session_name, Ref :$payload?) is Event
+    method post_subscription(Bool :$success, Str :$session_name, Ref :$payload?, Ref :$tag?) is Event
     {
         if($success)
         {
             Test::More::pass('Subscription successful');
+            Test::More::is_deeply($tag, \'tag_three', 'test subscription tag');
             $self->post
             (
                 'Client',
                 'server_listing',
                 connection_id   => $self->connection_id,
                 return_event    => 'post_listing',
+                tag             => \'tag_four',
             );
 
         }
@@ -168,11 +175,12 @@ class Tester with POEx::Role::SessionInstantiation
         }
     }
 
-    method post_listing(Bool :$success, ArrayRef :$payload) is Event
+    method post_listing(Bool :$success, ArrayRef :$payload, Ref :$tag?) is Event
     {
         if($success && (@$payload == 1) && $payload->[0] eq 'FooSession')
         {
             Test::More::pass('Listing successful');
+            Test::More::is_deeply($tag, \'tag_four');
 
             $self->post
             (

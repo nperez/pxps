@@ -342,7 +342,7 @@ see the POD in POEx::ProxySession::Types.
         }
     }
 
-=method subscribe(WheelID :$connection_id, SessionAlias :$to_session, SessionAlias|SessionID|Session|DoesSessionInstantiation :$return_session?,Str :$return_event) is Event
+=method subscribe(WheelID :$connection_id, SessionAlias :$to_session, SessionAlias|SessionID|Session|DoesSessionInstantiation :$return_session?,Str :$return_event, Ref :$tag?) is Event
 
 subscribe sends a message out to the server, and the handler receives the 
 appropriate metadata and constructs a local, persistent session that proxies 
@@ -350,7 +350,7 @@ posts back to the publisher. Once the session is finished constructing itself
 it will post a message to the provided return event.
 
 The return event must have the following signature:
-(Bool :$success, SessionAlias :$session_name, Ref :$payload)
+(Bool :$success, SessionAlias :$session_name, Ref :$payload, Ref :$tag?)
 
 Since subscription can fail, $success will indicate whether it succeeded or not
 and if not $payload will be a scalar reference to a string explaining why.
@@ -364,7 +364,8 @@ payload from the server containing the metadata.
         WheelID :$connection_id,
         SessionAlias :$to_session, 
         SessionAlias|SessionID|Session|DoesSessionInstantiation :$return_session?, 
-        Str :$return_event
+        Str :$return_event,
+        Ref :$tag?
     ) is Event
     {
         $return_session = $return_session // $self->poe->sender;
@@ -388,6 +389,7 @@ payload from the server containing the metadata.
                 session         => $to_session,
                 return_session  => $return_session,
                 return_event    => $return_event,
+                inner_tag       => $tag,
             }
         );
     }
@@ -422,6 +424,7 @@ payload from the server containing the metadata.
                         success         => $data->{success},
                         session_name    => $session_name,
                         payload         => $payload,
+                        tag             => $tag->{inner_tag}
                     );
 
                     $self->poe->kernel->detach_myself();
@@ -529,12 +532,13 @@ payload from the server containing the metadata.
                $tag->{return_event},
                success          => $data->{success},
                session_name     => $tag->{session},
-               payload          => thaw($data->{payload})
+               payload          => thaw($data->{payload}),
+               tag              => $tag->{inner_tag},
             );
         }
     }
 
-=method unsubscribe(SessionAlias :$session_name, SessionAlias|SessionID|Session|DoesSessionInstantiation :$return_session?, Str :$return_event) is Event
+=method unsubscribe(SessionAlias :$session_name, SessionAlias|SessionID|Session|DoesSessionInstantiation :$return_session?, Str :$return_event, Ref :$tag) is Event
 
 To unsubscribe from a proxied session, use this method. This will destroy the 
 session by removing its alias. Only pending events will keep the session alive.
@@ -549,7 +553,8 @@ the return event.
     (
         SessionAlias :$session_name, 
         SessionAlias|SessionID|Session|DoesSessionInstantiation :$return_session?, 
-        Str :$return_event
+        Str :$return_event,
+        Ref :$tag?
     ) is Event
     {
         die "Unknown session '$session_name'"
@@ -572,7 +577,7 @@ the return event.
         $self->post($session_name, 'shutdown');
     }
 
-=method publish(WheelID :$connection_id, SessionAlias :$session_alias, DoesSessionInstantiation :$session, SessionAlias|SessionID|Session|DoesSessionInstantiation :$return_session?, Str :$return_event) is Event
+=method publish(WheelID :$connection_id, SessionAlias :$session_alias, DoesSessionInstantiation :$session, SessionAlias|SessionID|Session|DoesSessionInstantiation :$return_session?, Str :$return_event, Ref :$tag?) is Event
 
 This method will publish a particular session to the server, such that other 
 clients can then subscribe.
@@ -591,7 +596,7 @@ POEx::Role::ProxyEvent role. All other methods will be ignored in proxy
 creation.
 
 The return event must have the following signature:
-(Bool :$success, SessionAlias :$session_alias, Ref :$payload?)
+(Bool :$success, SessionAlias :$session_alias, Ref :$payload?, Ref :$tag?)
 
 Since publication can fail, $success will indicate whether it succeeded or not
 and if not $payload will be a scalar reference to a string explaining why.
@@ -607,7 +612,8 @@ payload from the server containing the metadata.
         SessionAlias :$session_alias, 
         DoesSessionInstantiation :$session, 
         SessionAlias|SessionID|Session|DoesSessionInstantiation :$return_session?, 
-        Str :$return_event
+        Str :$return_event,
+        Ref :$tag?
     ) is Event
     {
         my $meta = $session->meta;
@@ -625,11 +631,12 @@ payload from the server containing the metadata.
             payload => $frozen,
         );
 
-        my %tag = 
+        my %rtstag = 
         (
             %payload,
             return_session  => $return_session // $self->poe->sender->ID,
             return_event    => $return_event,
+            inner_tag       => $tag,
         );
 
         $self->return_to_sender
@@ -638,7 +645,7 @@ payload from the server containing the metadata.
             wheel_id        => $connection_id, 
             return_session  => $self->ID, 
             return_event    => 'handle_on_publish', 
-            tag             => \%tag
+            tag             => \%rtstag
         );
     }
 
@@ -664,16 +671,17 @@ payload from the server containing the metadata.
         (
             $tag->{return_session}, 
             $tag->{return_event},
-            %args
+            %args,
+            tag => $tag->{inner_tag}
         );
     }
 
-=method rescind(DoesSessionInstantiation :$session, SessionAlias|SessionID|Session|DoesSessionInstantiation :$return_session?, Str :$return_event) is Event
+=method rescind(DoesSessionInstantiation :$session, SessionAlias|SessionID|Session|DoesSessionInstantiation :$return_session?, Str :$return_event, Ref :$tag?) is Event
 
 To take back a publication, use this method and pass it the session reference.
 
 The return event must have the following signature:
-(Bool :$success, SessionAlias :$session_name, Ref :$payload?)
+(Bool :$success, SessionAlias :$session_name, Ref :$payload?, Ref :$tag?)
 
 Since rescinding can fail, $success will let you know if it did. And if it did,
 $payload will be a reference a string explaining why. Otherwise, payload will
@@ -685,7 +693,8 @@ be undef.
     (
         DoesSessionInstantiation :$session, 
         SessionAlias|SessionID|Session|DoesSessionInstantiation :$return_session?, 
-        Str :$return_event
+        Str :$return_event,
+        Ref :$tag?
     ) is Event
     {
         my $name = $session->alias // $session->ID;
@@ -710,6 +719,7 @@ be undef.
                 session         => $name,
                 return_session  => $return_session // $self->poe->sender,
                 return_event    => $return_event,
+                inner_tag       => $tag,
             }
         );
     }
@@ -728,18 +738,19 @@ be undef.
         (
             $tag->{return_session}, 
             $tag->{return_event},
-            %args
+            %args,
+            tag => $tag->{inner_tag}
         );
     }
 
-=method server_listing(WheelID :$connection_id, SessionAlias|SessionID|Session|DoesSessionInstantiation :$return_session?, Str :$return_event) is Event
+=method server_listing(WheelID :$connection_id, SessionAlias|SessionID|Session|DoesSessionInstantiation :$return_session?, Str :$return_event, Ref :$tag?) is Event
 
 server_listing will query a particular server for a list of all published 
 sessions that it knows about. It returns it as an array of session aliases
 suitable for subscription.
 
 The return event must have the following signature:
-(Bool :$success, ArrayRef :$payload)
+(Bool :$success, ArrayRef :$payload, Ref :$tag?)
 
 =cut
 
@@ -747,7 +758,8 @@ The return event must have the following signature:
     (
         WheelID :$connection_id, 
         SessionAlias|SessionID|Session|DoesSessionInstantiation :$return_session?, 
-        Str :$return_event
+        Str :$return_event,
+        Ref :$tag?
     ) is Event
     {
         $self->return_to_sender
@@ -764,6 +776,7 @@ The return event must have the following signature:
             {
                 return_session  => $return_session // $self->poe->sender,
                 return_event    => $return_event,
+                inner_tag       => $tag,
             },
         );
     }
@@ -775,7 +788,8 @@ The return event must have the following signature:
         (
             $tag->{return_session},
             $tag->{return_event},
-            %args
+            %args,
+            tag => $tag->{inner_tag},
         );
     }
 }
