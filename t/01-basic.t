@@ -1,4 +1,4 @@
-use Test::More('tests', 19);
+use Test::More('tests', 20);
 use MooseX::Declare;
 
 BEGIN
@@ -31,7 +31,7 @@ class Foo with POEx::Role::SessionInstantiation
         );
     }
 
-    method handle_publish(Bool :$success, Str :$session_alias, Ref :$payload?, Ref :$tag?) is Event
+    method handle_publish(WheelID :$connection_id, Bool :$success, Str :$session_alias, Ref :$payload?, Ref :$tag?) is Event
     {
         if($success)
         {
@@ -61,7 +61,7 @@ class Foo with POEx::Role::SessionInstantiation
         );
     }
 
-    method handle_rescind(Bool :$success, Str :$session_name, Ref :$payload?, Ref :$tag?) is Event
+    method handle_rescind(WheelID :$connection_id, Bool :$success, Str :$session_name, Ref :$payload?, Ref :$tag?) is Event
     {
         if($success)
         {
@@ -152,7 +152,7 @@ class Tester with POEx::Role::SessionInstantiation
         );
     }
 
-    method post_subscription(Bool :$success, Str :$session_name, Ref :$payload?, Ref :$tag?) is Event
+    method post_subscription(WheelID :$connection_id, Bool :$success, Str :$session_name, Ref :$payload?, Ref :$tag?) is Event
     {
         if($success)
         {
@@ -175,7 +175,7 @@ class Tester with POEx::Role::SessionInstantiation
         }
     }
 
-    method post_listing(Bool :$success, ArrayRef :$payload, Ref :$tag?) is Event
+    method post_listing(WheelID :$connection_id, Bool :$success, ArrayRef :$payload, Ref :$tag?) is Event
     {
         if($success && (@$payload == 1) && $payload->[0] eq 'FooSession')
         {
@@ -214,12 +214,13 @@ class Tester with POEx::Role::SessionInstantiation
     {
         Test::More::pass('finish called');
         $self->clear_alias;
-        $self->post('Client', 'unsubscribe', session_name => 'FooSession', return_event => 'done');
+        $self->post('Client', 'unsubscribe', session_name => 'FooSession', return_event => 'done', tag => \'tag6');
     }
 
-    method done() is Event
+    method done(Bool :$success, SessionAlias :$session_alias, Ref :$tag?) is Event
     {
         Test::More::pass('all done');
+        Test::More::is_deeply($tag, \'tag6', 'test unsubscribe tag');
         $self->post('Server', 'shutdown');
         $self->post('Client', 'shutdown');
     }

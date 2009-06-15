@@ -421,6 +421,7 @@ payload from the server containing the metadata.
                     (
                         $tag->{return_session}, 
                         $tag->{return_event},
+                        connection_id   => $id,
                         success         => $data->{success},
                         session_name    => $session_name,
                         payload         => $payload,
@@ -530,6 +531,7 @@ payload from the server containing the metadata.
             (
                $tag->{return_session},
                $tag->{return_event},
+               connection_id    => $id,
                success          => $data->{success},
                session_name     => $tag->{session},
                payload          => thaw($data->{payload}),
@@ -546,6 +548,10 @@ session by removing its alias. Only pending events will keep the session alive.
 If it happens such that the session no longer exists, the return event will be 
 posted right away, other wise, _stop on the proxied session is advised to post
 the return event.
+
+The return event must have the following signature:
+(Bool :$success, SessionAlias :$session_alias, Ref :$tag?)
+
 
 =cut
 
@@ -567,13 +573,37 @@ the return event.
         if(!$session)
         {
             $self->delete_subscription($session_name);
-            $self->post($return_session, $return_event);
+            $self->post
+            (
+                $return_session, 
+                $return_event,
+                success         => 1,
+                session_alias   => $session_name,
+                tag             => $tag,
+            );
             return;
         }
         
         my $meta = $session->meta;
         my $closure = sub { $self->delete_subscription($session_name) };
-        $meta->add_after_method_modifer('_stop', sub ($obj) { $obj->post($return_session , $return_event); $closure->(); } );
+        $meta->add_after_method_modifer
+        (
+            '_stop', 
+            sub ($obj) 
+            { 
+                $obj->post
+                (
+                    $return_session , 
+                    $return_event,
+                    success         => 1,
+                    session_alias   => $obj->alias,
+                    tag             => $tag,
+                );
+
+                $closure->(); 
+            } 
+        );
+
         $self->post($session_name, 'shutdown');
     }
 
@@ -596,7 +626,7 @@ POEx::Role::ProxyEvent role. All other methods will be ignored in proxy
 creation.
 
 The return event must have the following signature:
-(Bool :$success, SessionAlias :$session_alias, Ref :$payload?, Ref :$tag?)
+(WheelID :$connection_id, Bool :$success, SessionAlias :$session_alias, Ref :$payload?, Ref :$tag?)
 
 Since publication can fail, $success will indicate whether it succeeded or not
 and if not $payload will be a scalar reference to a string explaining why.
@@ -671,6 +701,7 @@ payload from the server containing the metadata.
         (
             $tag->{return_session}, 
             $tag->{return_event},
+            connection_id => $id,
             %args,
             tag => $tag->{inner_tag}
         );
@@ -681,7 +712,7 @@ payload from the server containing the metadata.
 To take back a publication, use this method and pass it the session reference.
 
 The return event must have the following signature:
-(Bool :$success, SessionAlias :$session_name, Ref :$payload?, Ref :$tag?)
+(WheelID :$connection_id, Bool :$success, SessionAlias :$session_name, Ref :$payload?, Ref :$tag?)
 
 Since rescinding can fail, $success will let you know if it did. And if it did,
 $payload will be a reference a string explaining why. Otherwise, payload will
@@ -738,6 +769,7 @@ be undef.
         (
             $tag->{return_session}, 
             $tag->{return_event},
+            connection_id => $id,
             %args,
             tag => $tag->{inner_tag}
         );
@@ -750,7 +782,7 @@ sessions that it knows about. It returns it as an array of session aliases
 suitable for subscription.
 
 The return event must have the following signature:
-(Bool :$success, ArrayRef :$payload, Ref :$tag?)
+(WheelID :$connection_id, Bool :$success, ArrayRef :$payload, Ref :$tag?)
 
 =cut
 
@@ -788,6 +820,7 @@ The return event must have the following signature:
         (
             $tag->{return_session},
             $tag->{return_event},
+            connection_id => $id,
             %args,
             tag => $tag->{inner_tag},
         );
