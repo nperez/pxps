@@ -245,18 +245,15 @@ The return event will need the following signature:
         Str :$return_event
     ) is Event
     {
-        $orig->($self, remote_address => $remote_address, remote_port => $remote_port);
-        
-        $self->set_pending
-        (
-            "$remote_address:$remote_port", 
-            {
-                address         => $remote_address,
-                port            => $remote_port,
-                return_session  => $return_session // $self->poe->sender->ID, 
-                return_event    => $return_event 
-            } 
-        );
+        my $tag = 
+        {
+            address         => $remote_address,
+            port            => $remote_port,
+            return_session  => $return_session // $self->poe->sender->ID, 
+            return_event    => $return_event 
+        };
+
+        $orig->($self, remote_address => $remote_address, remote_port => $remote_port, tag => $tag);
     }
 
 =method after handle_on_connect(GlobRef $socket, Str $address, Int $port, WheelID $id) is Event
@@ -268,24 +265,21 @@ and post the message with the paramters received from the socketfactory
 
     after handle_on_connect(GlobRef $socket, Str $address, Int $port, WheelID $id) is Event
     {
-        my $addr = inet_ntoa($address);
-        my $addr_port = "$addr:$port";
-        
-        if($self->has_pending($addr_port))
+        if($self->has_connection_tag($id))
         {
-            my $tag = $self->delete_pending($addr_port);
+            my $tag = $self->delete_connection_tag($id);
             $self->post
             (
                 $tag->{return_session},
                 $tag->{return_event},
                 connection_id   => $self->last_wheel,
-                remote_address  => $addr,
+                remote_address  => inet_ntoa($address),
                 remote_port     => $port,
             );
         }
         else
         {
-            die "Connect finished for unknown address: $addr_port";
+            die "Unknown connection made. No connection tag associated with socket factory '$id'";
         }
     }
 
