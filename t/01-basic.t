@@ -46,9 +46,9 @@ class Foo with POEx::Role::SessionInstantiation
         }
     }
 
-    method foo(Str $arg1) is (Event, ProxyEvent) { Test::More::pass('Foo::foo called'); }
-    method bar(Int $arg1) is (Event, ProxyEvent) { Test::More::pass('Foo::bar called'); }
-    method yar(Bool $blat) is (Event, ProxyEvent)
+    method foo(Str $arg1) is ProxyEvent { Test::More::pass('Foo::foo called'); }
+    method bar(Int $arg1) is ProxyEvent { Test::More::pass('Foo::bar called'); }
+    method yar(Bool $blat) is ProxyEvent
     { 
         Test::More::pass('Foo::yar called'); 
         $self->post

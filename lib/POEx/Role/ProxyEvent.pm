@@ -4,7 +4,7 @@ package POEx::Role::ProxyEvent;
 
 use MooseX::Declare;
 
-role POEx::Role::ProxyEvent
+role POEx::Role::ProxyEvent with POEx::Role::Event
 {
 }
 1;

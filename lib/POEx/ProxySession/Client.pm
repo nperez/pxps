@@ -15,7 +15,7 @@ $Storable::forgive_me = 1;
         use aliased 'POEx::Role::ProxyEvent';
         
         # The event we want to expose
-        method yarg() {  } is (Event, ProxyEvent)
+        method yarg() {  } is ProxyEvent
         
         after _start(@args) is Event
         {
