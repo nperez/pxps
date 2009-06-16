@@ -115,6 +115,7 @@ class POEx::ProxySession::Client with (POEx::Role::TCPClient, POEx::ProxySession
     use POEx::Types(':all');
     use POE::Filter::Reference;
     use MooseX::Types::Moose(':all');
+    use MooseX::Types::Structured('Tuple');
     use MooseX::AttributeHelpers;
     use Moose::Util('does_role');
     use Storable('thaw', 'nfreeze');
@@ -214,6 +215,24 @@ Each instance of a publication is stored as a hash with the following keys:
         }
     );
 
+
+=attr unknown_message_event is: 'ro', isa: Tuple[SessionAlias, Str]
+
+Set this attribute to receive unknown messages that were sent to the client. 
+This is handy for sending custom message types across the Server.
+
+The event handler must have this signature:
+(ProxyMessage $data, WheelID $id)
+
+=cut
+
+    has unknown_message_event =>
+    (
+        is          => 'ro',
+        isa         => Tuple[SessionAlias, Str],
+        predicate   => 'has_unknown_message_event',
+    );
+
 =method after _start(@args) is Event
 
 The _start method is advised to hardcode the filter to use as a 
@@ -226,14 +245,14 @@ POE::Filter::Reference instance.
         $self->filter(POE::Filter::Reference->new());
     }
 
-=method around connect(Str :$remote_address,Int :$remote_port, SessionAlias|SessionID|Session|DoesSessionInstantiation :$return_session?,Str :$return_event) is Event
+=method around connect(Str :$remote_address,Int :$remote_port, SessionAlias|SessionID|Session|DoesSessionInstantiation :$return_session?,Str :$return_event,Ref :$tag?) is Event
 
 The connect method is advised to add additional parameters in the form of a
 return session and return event to use once the connection has been 
 established.
 
 The return event will need the following signature:
-(WheelID :$connection_id, Str :$remote_address, Int :$remote_port)
+(WheelID :$connection_id, Str :$remote_address, Int :$remote_port, Ref :tag?)
 
 =cut
 
@@ -242,18 +261,20 @@ The return event will need the following signature:
         Str :$remote_address, 
         Int :$remote_port, 
         SessionAlias|SessionID|Session|DoesSessionInstantiation :$return_session?, 
-        Str :$return_event
+        Str :$return_event,
+        Ref :$tag?
     ) is Event
     {
-        my $tag = 
+        my $connect_tag = 
         {
             address         => $remote_address,
             port            => $remote_port,
             return_session  => $return_session // $self->poe->sender->ID, 
-            return_event    => $return_event 
+            return_event    => $return_event,
+            inner_tag       => $tag,
         };
 
-        $orig->($self, remote_address => $remote_address, remote_port => $remote_port, tag => $tag);
+        $orig->($self, remote_address => $remote_address, remote_port => $remote_port, tag => $connect_tag);
     }
 
 =method after handle_on_connect(GlobRef $socket, Str $address, Int $port, WheelID $id) is Event
@@ -275,6 +296,7 @@ and post the message with the paramters received from the socketfactory
                 connection_id   => $self->last_wheel,
                 remote_address  => inet_ntoa($address),
                 remote_port     => $port,
+                tag             => $tag->{inner_tag}
             );
         }
         else
@@ -288,7 +310,8 @@ and post the message with the paramters received from the socketfactory
 Our implementation of handle_inbound_data expects a ProxyMessage as data. Here 
 is where the handling and routing of messages lives. Only handles two types of
 ProxyMessage: result, and deliver. For more information on ProxyMessage types,
-see the POD in POEx::ProxySession::Types.
+see the POD in POEx::ProxySession::Types. If an unknown message type is
+encountered and unknown_message_event is set, it will be delivered to there.
 
 =cut
 
@@ -337,6 +360,19 @@ see the POD in POEx::ProxySession::Types.
                         wheel_id    => $id,
                     );
 
+                }
+            }
+            default
+            {
+                if($self->has_unknown_message_event)
+                {
+                    $self->post
+                    (
+                        $self->unknown_message_event->[0],
+                        $self->unknown_message_event->[1],
+                        $data,
+                        $id
+                    );
                 }
             }
         }

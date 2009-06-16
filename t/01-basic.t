@@ -1,4 +1,4 @@
-use Test::More('tests', 20);
+use Test::More('tests', 23);
 use MooseX::Declare;
 
 BEGIN
@@ -81,6 +81,8 @@ class Foo with POEx::Role::SessionInstantiation
 
 class Tester with POEx::Role::SessionInstantiation
 {
+    use Storable('nfreeze');
+    use POEx::ProxySession::Types(':all');
     use POEx::Types(':all');
     use aliased 'POEx::Role::Event';
     
@@ -102,12 +104,13 @@ class Tester with POEx::Role::SessionInstantiation
         ( 
             alias   => 'Client',
             options => { trace => 1, debug => 1 },
+            unknown_message_event => [$self->alias, 'unknown_event']
         );
 
         Foo->new
         (
-            alias => 'foo',
-            options     => { trace => 1, debug => 1 },
+            alias   => 'foo',
+            options => { trace => 1, debug => 1 },
         );
 
         $self->post
@@ -117,16 +120,24 @@ class Tester with POEx::Role::SessionInstantiation
             remote_address  => '127.0.0.1', 
             remote_port     => 56789,
             return_session  => $self->alias,
-            return_event    => 'post_connect'
+            return_event    => 'post_connect',
+            tag             => \'connect_tag'
         );
 
         $self->server($server);
         $self->client($client);
     }
 
-    method post_connect(WheelID :$connection_id, Str :$remote_address, Int :$remote_port) is Event
+    method unknown_event(ProxyMessage $data, WheelID $id) is Event
+    {
+        Test::More::pass('Tester::unknown_event called');
+        Test::More::is($data->{type}, 'unknown', 'type of unknown event is "unknown"');
+    }
+
+    method post_connect(WheelID :$connection_id, Str :$remote_address, Int :$remote_port, Ref :$tag) is Event
     {
         Test::More::pass('Tester::post_connect called');
+        Test::More::is_deeply($tag, \'connect_tag', 'connect tag test');
         
         $self->connection_id($connection_id);
 
@@ -135,6 +146,18 @@ class Tester with POEx::Role::SessionInstantiation
             'foo',
             'setup',
             connection_id => $connection_id,
+        );
+
+        $self->post
+        (
+            'Client',
+            'handle_inbound_data',
+            {
+                type => 'unknown',
+                id => -1,
+                payload => nfreeze(\'test_unknown'),
+            },
+            1,
         );
     }
 
