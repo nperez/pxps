@@ -33,6 +33,7 @@ class POEx::ProxySession::Server with (POEx::Role::TCPServer, POEx::ProxySession
     use MooseX::Types::Moose(':all');
     use MooseX::AttributeHelpers;
     use Storable('thaw', 'nfreeze');
+    use POE::Filter::Reference;
     use aliased 'POEx::Role::Event';
 
 =attr sessions metaclass => MooseX::AttributeHelpers::Collection::Hash
