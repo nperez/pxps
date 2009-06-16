@@ -216,7 +216,7 @@ Each instance of a publication is stored as a hash with the following keys:
     );
 
 
-=attr unknown_message_event is: 'ro', isa: Tuple[SessionAlias, Str]
+=attr unknown_message_event is: 'rw', isa: Tuple[SessionAlias, Str]
 
 Set this attribute to receive unknown messages that were sent to the client. 
 This is handy for sending custom message types across the Server.
@@ -228,7 +228,7 @@ The event handler must have this signature:
 
     has unknown_message_event =>
     (
-        is          => 'ro',
+        is          => 'rw',
         isa         => Tuple[SessionAlias, Str],
         predicate   => 'has_unknown_message_event',
     );
