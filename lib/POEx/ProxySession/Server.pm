@@ -56,7 +56,7 @@ The stored structure looks like the following:
     Session =>
     {
         name    => isa SessionAlias,
-        meta    => isa Moose::Meta::Class,
+        methods => HashRef,
         id      => isa WheelID,
     }
 
@@ -204,7 +204,7 @@ alias
 
         my $alias = $payload->{session_alias};
         my $name = $payload->{session_name};
-        my $meta = $payload->{meta};
+        my $methods = $payload->{methods};
 
         if(!$alias)
         {
@@ -241,8 +241,7 @@ alias
         }
         else
         {
-            bless($meta, 'Moose::Meta::Class');
-            $self->set_session($alias, { name => $name, meta => $meta, wheel => $id });
+            $self->set_session($alias, { name => $name, methods => $methods, wheel => $id });
             
             $self->yield
             (
@@ -260,7 +259,7 @@ This method handles subscription requests. Payload on success is a hashref:
 
     {
         session => isa SessionAlias,
-        meta => isa Moose::Meta::Class,
+        methods => HashRef,
     }
 
 =cut
@@ -281,7 +280,7 @@ This method handles subscription requests. Payload on success is a hashref:
             return;
         }
 
-        my $result = { session => $session_name, meta => $self->get_session($session_name)->{meta} };
+        my $result = { session => $session_name, methods => $self->get_session($session_name)->{methods} };
 
         $self->yield
         (

@@ -190,7 +190,7 @@ Each instance of a publication is stored as a hash with the following keys:
 
     Publication =>
     {
-        meta            => isa Moose::Meta::Class,
+        methods         => isa HashRef,
         wheel           => isa WheelID,
         session_alias   => isa SessionAlias,
     }
@@ -435,10 +435,8 @@ payload from the server containing the metadata.
         if($data->{success})
         {
             my $payload = thaw($data->{payload});
-            my ($session_name, $meta) = @$payload{'session', 'meta'};
+            my ($session_name, $methods) = @$payload{'session', 'methods'};
             my $self_address = $self->alias // $self->ID;
-            
-            bless($meta, 'Moose::Meta::Class');
             
             my $anon = class with POEx::Role::SessionInstantiation
             {
@@ -480,36 +478,13 @@ payload from the server containing the metadata.
                 }
             };
             
-            my $methods = $meta->{methods};
-            foreach my $name (keys %$methods)
+            while(my ($method_name, $method_args) = each %$methods)
             {
-                my $method = $methods->{$name};
-                if($method->isa('Class::MOP::Method::Wrapped'))
-                {
-                    my $orig = $method->get_original_method;
-                    if(!$orig->meta->isa('Moose::Meta::Class') || !$orig->meta->does_role(ProxyEvent))
-                    {
-                        next;
-                    }
-                    else
-                    {
-                        $method = $orig;
-                    }
-
-                }
-                elsif(!$method->meta->isa('Moose::Meta::Class') || !$method->meta->does_role(ProxyEvent))
-                {
-                    next;
-                }
-                
-                # making this assumption is okay for now
-                bless($method, MXMSMethod);
-                
                 # build our closure proxy method
                 my $code = sub
                 {
                     my ($obj, @args) = @_;
-                    my $load = { event => $name, args => \@args };
+                    my $load = { event => $method_name, args => \@args };
 
                     my $msg =
                     {
@@ -530,7 +505,7 @@ payload from the server containing the metadata.
                         tag             => 
                         {
                             session_name    => $session_name,
-                            event_name      => $name,
+                            event_name      => $method_name,
                             args            => \@args,
                         }
                     );
@@ -539,22 +514,22 @@ payload from the server containing the metadata.
                 
                 my %args;
                 
-                $args{name} = $name;
-                $args{package_name} = $self->meta->name;
-                $args{signature} = $method->signature // '(@args)';
-                $args{return_signature} = $method->return_signature if defined $method->return_signature;
+                $args{name} = $method_name;
+                $args{package_name} = $anon->name;
+                $args{signature} = $method_args->{signature} // '(@args)';
+                $args{return_signature} = $method_args->{return_signature} if defined($method_args->{return_signature});
                 $args{body} = $code;
                 
-                if($method->has_traits)
+                if(exists($method_args->{traits}))
                 {
                     # make sure all the method traits are loaded
-                    map { Class::MOP::load_class($_) } keys %{$method->traits};
-                    $args{traits} = $method->traits;
+                    map { Class::MOP::load_class($_) } keys %{$method_args->{traits}};
+                    $args{traits} = $method_args->{traits};
                 }
                 
                 my $new_meth = MXMSMethod->wrap(%args);
                 Event->meta->apply($new_meth) if not does_role($new_meth, Event);
-                $anon->add_method($name, $new_meth);
+                $anon->add_method($method_name, $new_meth);
             }
 
             $self->set_subscription($session_name, { meta => $anon, wheel => $id});
@@ -683,8 +658,38 @@ payload from the server containing the metadata.
     ) is Event
     {
         my $meta = $session->meta;
+        
+        my $methods = {};
+        foreach my $method ($meta->get_all_methods)
+        {
+            if($method->isa('Class::MOP::Method::Wrapped'))
+            {
+                my $orig = $method->get_original_method;
+                if(!$orig->meta->isa('Moose::Meta::Class') || !$orig->meta->does_role(ProxyEvent))
+                {
+                    next;
+                }
+                else
+                {
+                    $method = $orig;
+                }
 
-        my %payload = ( session_name => $session->alias // $session->ID, session_alias => $session_alias, meta => $meta ); 
+            }
+            elsif(!$method->meta->isa('Moose::Meta::Class') || !$method->meta->does_role(ProxyEvent))
+            {
+                next;
+            }
+
+            $methods->{$method->name} =  
+            {
+                signature => $method->signature,
+                return_signature => $method->return_signature,
+                traits => $method->traits,
+            };
+        }
+
+
+        my %payload = ( session_name => $session->alias // $session->ID, session_alias => $session_alias, methods => $methods ); 
         my $frozen;
         {
             local $SIG{__WARN__} = sub { };
@@ -723,9 +728,9 @@ payload from the server containing the metadata.
             (
                 $tag->{session_name},
                 {
-                    meta => $tag->{meta},
-                    wheel => $id,
-                    alias => $tag->{session_alias},
+                    methods => $tag->{methods},
+                    wheel   => $id,
+                    alias   => $tag->{session_alias},
                 }
             );
         }
@@ -876,9 +881,4 @@ to the publisher with the attendant method signatures.
 It should be noted that the transport mechanism makes use of Storable. That
 means that all of the various end points in a spawling system need to use the
 same version of Storable to make sure things serialize/deserialize correctly.
-
-Since Moose::Meta::Classes contain a lot of coderefs, and since MooseX::Declare
-does a lot of coderef munging, the choice was made to forego using the Storable
-ability to serialize coderefs via B::Deparse and just discard them. This means
-that encapsulation is broken on Moose::Meta::Class to access methods.
 
