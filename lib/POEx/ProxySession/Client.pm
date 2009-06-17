@@ -465,7 +465,7 @@ payload from the server containing the metadata.
                     $self->poe->kernel->detach_myself();
                 }
 
-                method proxy_send_failure(ProxyMessage $data, WheelID $id, HashRef $tag) is Event
+                method proxy_send_check(ProxyMessage $data, WheelID $id, HashRef $tag) is Event
                 {
                     warn 'A proxy call to '. $tag->{session_name} . ':'. $tag->{event_name} .
                     ' with the arguments [ ' . join(', ', @{ $tag->{args} }) . ' ] failed: '.
@@ -501,7 +501,7 @@ payload from the server containing the metadata.
                         message         => $msg, 
                         wheel_id        => $id,
                         return_session  => $obj->ID,
-                        return_event    => 'proxy_send_failure',
+                        return_event    => 'proxy_send_check',
                         tag             => 
                         {
                             session_name    => $session_name,
@@ -534,7 +534,18 @@ payload from the server containing the metadata.
 
             $self->set_subscription($session_name, { meta => $anon, wheel => $id});
             
-            $anon->name->new(alias => $session_name, options => { trace => 1, debug => 1});
+            my $trace = $self->options->{trace} // 0;
+            my $debug = $self->options->{debug} // 0;
+
+            $anon->name->new
+            (
+                alias => $session_name, 
+                options => 
+                { 
+                    trace => $trace, 
+                    debug => $debug
+                }
+            );
         }
         else
         {

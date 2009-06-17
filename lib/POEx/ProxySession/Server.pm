@@ -80,6 +80,25 @@ The stored structure looks like the following:
         }
     );
 
+    has delivered_store =>
+    (
+        metaclass   => 'MooseX::AttributeHelpers::Collection::Hash',
+        isa         => HashRef,
+        lazy        => 1,
+        default     => sub { {} },
+        clearer     => 'clear_delivereds',
+        provides    => 
+        {
+            get     => 'get_delivered',
+            set     => 'set_delivered',
+            delete  => 'delete_delivered',
+            count   => 'count_delivereds',
+            keys    => 'all_delivered_keys',
+            values  => 'all_delivered_values',
+            exists  => 'has_delivered',
+        }
+    );
+
 =method after _start(@args) is Event
 
 The _start method is advised to hardcode the filter to use as a 
@@ -127,7 +146,7 @@ result.
             }
             when ('result')
             {
-                $self->yield('handle_pending', $data, $id);
+                $self->yield('handle_delivered', $data, $id);
             }
             default
             {
@@ -296,7 +315,7 @@ This method handles subscription requests. Payload on success is a hashref:
 
 This method does message delivery by doing a lookup of the alias to the real
 session name, and rewriting the message header to point to that session, then
-sends it on to that session's connection. Sets a pending message.
+sends it on to that session's connection. Sets a delivered message.
 
 =cut
 
@@ -321,27 +340,33 @@ sends it on to that session's connection. Sets a pending message.
         $data->{to} = $lookup->{name};
         my $wheel_id = $lookup->{wheel};
         
-        $self->set_pending($data->{id}, $id);
+        $self->set_delivered($data->{id}, $id);
         $self->get_wheel($wheel_id)->put($data);
     }
 
-=method handle_pending(ProxyMessage $data, WheelID $id) is Event
+=method handle_delivered(ProxyMessage $data, WheelID $id) is Event
 
-This method handles pending result messages. All messages that go through
-the system are expected to return a result message indicating success or
-failure.
+This method handles result messages from delivered messages. All messages that 
+go through the system are expected to return a result message indicating 
+success or failure.
 
 =cut
-    method handle_pending(ProxyMessage $data, WheelID $id) is Event
+    method handle_delivered(ProxyMessage $data, WheelID $id) is Event
     {
-        if(!$self->has_pending($data->{id}))
+        if($self->has_pending($data->{id}))
+        {
+            my $pending = $self->delete_pending($data->{id});
+            $self->post($pending->{return_session}, $pending->{return_event}, $data, $id, $pending->{tag});
+        }
+        elsif($self->has_delivered($data->{id}))
+        {
+            my $to_id = $self->delete_delivered($data->{id});
+            $self->get_wheel($to_id)->put($data);
+        }
+        else
         {
             warn q|Received an unexpected result message|;
-            return;
         }
-
-        my $to_id = $self->delete_pending($data->{id});
-        $self->get_wheel($to_id)->put($data);
     }
 
 =method get_listing(ProxyMessage $data, WheelID $id) is Event

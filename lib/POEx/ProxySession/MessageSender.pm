@@ -47,6 +47,7 @@ It has no accessors beyond those provided by AttributeHelpers:
             delete  => 'delete_pending',
             count   => 'count_pending',
             exists  => 'has_pending',
+            values  => 'all_pending',
         }
 
     );    
