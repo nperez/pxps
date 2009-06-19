@@ -125,6 +125,7 @@ class POEx::ProxySession::Client with (POEx::Role::TCPClient, POEx::ProxySession
     use aliased 'POEx::Role::Event';
     use aliased 'POEx::Role::ProxyEvent';
     use aliased 'MooseX::Method::Signatures::Meta::Method', 'MXMSMethod';
+    use aliased 'POEx::ProxySession::Proxy';
 
 =attr subscriptions metaclass => MooseX::AttributeHelpers::Collection::Hash
 
@@ -434,116 +435,15 @@ payload from the server containing the metadata.
     {
         if($data->{success})
         {
-            my $payload = thaw($data->{payload});
-            my ($session_name, $methods) = @$payload{'session', 'methods'};
-            my $self_address = $self->alias // $self->ID;
-            
-            my $anon = class with POEx::Role::SessionInstantiation
-            {
-                use Class::MOP;
-                use MooseX::Types::Moose(':all');
-                use POEx::Types(':all');
-                use POEx::ProxySession::Types(':all');
-                use Storable('thaw', 'nfreeze');
-
-                use aliased 'POEx::Role::Event';
-
-
-                after _start(@args) is Event
-                {
-                    $self->post
-                    (
-                        $tag->{return_session}, 
-                        $tag->{return_event},
-                        connection_id   => $id,
-                        success         => $data->{success},
-                        session_name    => $session_name,
-                        payload         => $payload,
-                        tag             => $tag->{inner_tag}
-                    );
-
-                    $self->poe->kernel->detach_myself();
-                }
-
-                method proxy_send_check(ProxyMessage $data, WheelID $id, HashRef $tag) is Event
-                {
-                    warn 'A proxy call to '. $tag->{session_name} . ':'. $tag->{event_name} .
-                    ' with the arguments [ ' . join(', ', @{ $tag->{args} }) . ' ] failed: '.
-                    thaw($data->{payload}) if !$data->{success};
-                }
-
-                method shutdown() is Event
-                {
-                    $self->clear_alias;
-                }
-            };
-            
-            while(my ($method_name, $method_args) = each %$methods)
-            {
-                # build our closure proxy method
-                my $code = sub
-                {
-                    my ($obj, @args) = @_;
-                    my $load = { event => $method_name, args => \@args };
-
-                    my $msg =
-                    {
-                        id => -1,
-                        type => 'deliver',
-                        to => $session_name,
-                        payload => nfreeze($load),
-                    };
-
-                    $obj->post
-                    (
-                        $self_address, 
-                        'return_to_sender', 
-                        message         => $msg, 
-                        wheel_id        => $id,
-                        return_session  => $obj->ID,
-                        return_event    => 'proxy_send_check',
-                        tag             => 
-                        {
-                            session_name    => $session_name,
-                            event_name      => $method_name,
-                            args            => \@args,
-                        }
-                    );
-                };
-
-                
-                my %args;
-                
-                $args{name} = $method_name;
-                $args{package_name} = $anon->name;
-                $args{signature} = $method_args->{signature} // '(@args)';
-                $args{return_signature} = $method_args->{return_signature} if defined($method_args->{return_signature});
-                $args{body} = $code;
-                
-                if(exists($method_args->{traits}))
-                {
-                    # make sure all the method traits are loaded
-                    map { Class::MOP::load_class($_) } keys %{$method_args->{traits}};
-                    $args{traits} = $method_args->{traits};
-                }
-                
-                my $new_meth = MXMSMethod->wrap(%args);
-                Event->meta->apply($new_meth) if not does_role($new_meth, Event);
-                $anon->add_method($method_name, $new_meth);
-            }
-
-            $self->set_subscription($session_name, { meta => $anon, wheel => $id});
-            
-            my $trace = $self->options->{trace} // 0;
-            my $debug = $self->options->{debug} // 0;
-
-            $anon->name->new
+            Proxy->new
             (
-                alias => $session_name, 
+                parent_id => $self->ID,
+                parent_startup => 'handle_on_proxy',
+                args => [ $data, $id, $tag ],
                 options => 
                 { 
-                    trace => $trace, 
-                    debug => $debug
+                    trace => $self->options->{trace} // 0, 
+                    debug => $self->options->{debug} // 0,
                 }
             );
         }
@@ -560,6 +460,11 @@ payload from the server containing the metadata.
                tag              => $tag->{inner_tag},
             );
         }
+    }
+
+    method handle_on_proxy(SessionAlias $session_name, Object $meta, WheelID $id) is Event
+    {
+        $self->set_subscription($session_name, { meta => $meta, wheel => $id});
     }
 
 =method unsubscribe(SessionAlias :$session_name, SessionAlias|SessionID|Session|DoesSessionInstantiation :$return_session?, Str :$return_event, Ref :$tag) is Event
