@@ -119,7 +119,6 @@ class POEx::ProxySession::Client with (POEx::Role::TCPClient, POEx::ProxySession
     use MooseX::AttributeHelpers;
     use Moose::Util('does_role');
     use Storable('thaw', 'nfreeze');
-    use signatures;
     use Socket;
 
     use aliased 'POEx::Role::Event';
@@ -516,8 +515,9 @@ The return event must have the following signature:
         $meta->add_after_method_modifer
         (
             '_stop', 
-            sub ($obj) 
+            sub 
             { 
+                my $obj = shift;
                 $obj->post
                 (
                     $return_session , 
