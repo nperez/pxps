@@ -1,15 +1,15 @@
 package POEx::ProxySession::Server;
-use 5.010;
 
 #ABSTRACT: Hosts published sessions and routes proxy message
 
 use MooseX::Declare;
-$Storable::forgive_me = 1;
 
 =head1 SYNOPSIS
 
-class Flarg with POEx::Role::SessionInstantiation
+class Flarg 
 {
+    with 'POEx::Role::SessionInstantiation';
+
     after _start(@args) is Event
     {
         POEx::ProxySession::Server->new
@@ -25,9 +25,9 @@ class Flarg with POEx::Role::SessionInstantiation
 
 =cut
 
-class POEx::ProxySession::Server with (POEx::Role::TCPServer, POEx::ProxySession::MessageSender)
+class POEx::ProxySession::Server
 {
-    use 5.010;
+    with 'POEx::ProxySession::MessageSender';
     use POEx::ProxySession::Types(':all');
     use POEx::Types(':all');
     use MooseX::Types::Moose(':all');
@@ -99,18 +99,6 @@ The stored structure looks like the following:
         }
     );
 
-=method after _start(@args) is Event
-
-The _start method is advised to hardcode the filter to use as a 
-POE::Filter::Reference instance.
-
-=cut
-
-    after _start(@args) is Event
-    {
-        $self->filter(POE::Filter::Reference->new());
-    }
-
 =method handle_inbound_data(ProxyMessage $data, WheelID $id) is Event
 
 Our implementation of handle_inbound_data expects a ProxyMessage as data. Here 
@@ -122,45 +110,56 @@ result.
 
     method handle_inbound_data(ProxyMessage $data, WheelID $id) is Event
     {
-        given($data->{type})
+        if ($data->{type} eq 'publish')
         {
-            when ('publish')
-            {
-                $self->yield('publish_session', $data, $id);
-            }
-            when ('rescind')
-            {
-                $self->yield('rescind_session', $data, $id);
-            }
-            when ('listing')
-            {
-                $self->yield('get_listing', $data, $id);
-            }
-            when ('subscribe')
-            {
-                $self->yield('subscribe_session', $data, $id);
-            }
-            when ('deliver')
-            {
-                $self->yield('deliver_message', $data, $id);
-            }
-            when ('result')
-            {
-                $self->yield('handle_delivered', $data, $id);
-            }
-            default
-            {
-                my $type = $data->{type};
-                $self->yield
-                (
-                    'send_result', 
-                    success     => 0,
-                    original    => $data, 
-                    wheel_id    => $id, 
-                    payload     => \"Unknown message type '$type'"
-                );
-            }
+            $self->yield('publish_session', $data, $id);
         }
+        elsif ($data->{type} eq 'rescind')
+        {
+            $self->yield('rescind_session', $data, $id);
+        }
+        elsif ($data->{type} eq 'listing')
+        {
+            $self->yield('get_listing', $data, $id);
+        }
+        elsif ($data->{type} eq 'subscribe')
+        {
+            $self->yield('subscribe_session', $data, $id);
+        }
+        elsif ($data->{type} eq 'deliver')
+        {
+            $self->yield('deliver_message', $data, $id);
+        }
+        elsif ($data->{type} eq 'result')
+        {
+            $self->yield('handle_delivered', $data, $id);
+        }
+        else
+        {
+            my $type = $data->{type};
+            $self->yield
+            (
+                'send_result', 
+                success     => 0,
+                original    => $data, 
+                wheel_id    => $id, 
+                payload     => \"Unknown message type '$type'"
+            );
+        }
+    }
+    
+    with 'POEx::Role::TCPServer';
+
+=method after _start(@args) is Event
+
+The _start method is advised to hardcode the filter to use as a 
+POE::Filter::Reference instance.
+
+=cut
+
+    after _start(@args) is Event
+    {
+        $self->filter(POE::Filter::Reference->new());
     }
 
 =method rescind_session(ProxyMessage $data, WheelID $id) is Event

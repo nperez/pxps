@@ -1,13 +1,12 @@
 package POEx::ProxySession::Proxy;
 
-use 5.010;
-
 #ABSTRACT: This is the proxy class
 
 use MooseX::Declare;
 
-class POEx::ProxySession::Proxy with POEx::Role::SessionInstantiation is mutable
+class POEx::ProxySession::Proxy is mutable
 {
+    with 'POEx::Role::SessionInstantiation'; 
     use Class::MOP;
     use MooseX::Types::Moose(':all');
     use POEx::Types(':all');
@@ -20,6 +19,7 @@ class POEx::ProxySession::Proxy with POEx::Role::SessionInstantiation is mutable
 
     has parent_id => ( is => 'ro', isa => SessionID );
     has parent_startup => ( is => 'ro', isa => Str );
+    has connection_id => ( is => 'rw', isa => WheelID );
 
     after _start(ProxyMessage $data, WheelID $id, HashRef $tag) is Event
     {
@@ -29,6 +29,7 @@ class POEx::ProxySession::Proxy with POEx::Role::SessionInstantiation is mutable
         my $meta = $self->_clone_self->meta;
         
         $self->alias($session_name);
+        $self->connection_id($id);
 
         while(my ($method_name, $method_args) = each %$methods)
         {
@@ -51,7 +52,7 @@ class POEx::ProxySession::Proxy with POEx::Role::SessionInstantiation is mutable
                     $parent_id, 
                     'return_to_sender', 
                     message         => $msg, 
-                    wheel_id        => $id,
+                    wheel_id        => $obj->connection_id,
                     return_session  => $obj->ID,
                     return_event    => 'proxy_send_check',
                     tag             => 
@@ -68,14 +69,14 @@ class POEx::ProxySession::Proxy with POEx::Role::SessionInstantiation is mutable
             
             $args{name} = $method_name;
             $args{package_name} = $meta->name;
-            $args{signature} = $method_args->{signature} // '(@args)';
+            #$args{signature} = $method_args->{signature} // '(@args)';
             $args{return_signature} = $method_args->{return_signature} if defined($method_args->{return_signature});
             $args{body} = $code;
             
             if(exists($method_args->{traits}))
             {
                 # make sure all the method traits are loaded
-                map { Class::MOP::load_class($_) } keys %{$method_args->{traits}};
+                map { Class::MOP::load_class($_->[0]) } @{$method_args->{traits}};
                 $args{traits} = $method_args->{traits};
             }
             

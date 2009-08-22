@@ -1,16 +1,15 @@
 package POEx::ProxySession::Client;
-use 5.010;
 
 #ABSTRACT: Proxies remote, published Sessions, or publishes, local Sessions for subscription
 
 use MooseX::Declare;
-$Storable::forgive_me = 1;
 
 =head1 SYNOPSIS
 
     # on the publisher side
-    class Foo with POEx::Role::SessionInstantiation
+    class Foo 
     {
+        with 'POEx::Role::SessionInstantiation';
         use aliased 'POEx::Role::Event';
         use aliased 'POEx::Role::ProxyEvent';
         
@@ -108,14 +107,15 @@ $Storable::forgive_me = 1;
 
 =cut
 
-class POEx::ProxySession::Client with (POEx::Role::TCPClient, POEx::ProxySession::MessageSender)
+class POEx::ProxySession::Client
 {
-    use 5.010;
+    with 'POEx::ProxySession::MessageSender';
     use POEx::ProxySession::Types(':all');
     use POEx::Types(':all');
     use POE::Filter::Reference;
+    use MooseX::Types;
     use MooseX::Types::Moose(':all');
-    use MooseX::Types::Structured('Tuple');
+    use MooseX::Types::Structured('Optional','Dict','Tuple');
     use MooseX::AttributeHelpers;
     use Moose::Util('does_role');
     use Storable('thaw', 'nfreeze');
@@ -155,7 +155,7 @@ keys:
     has subscriptions =>
     (
         metaclass   => 'MooseX::AttributeHelpers::Collection::Hash',
-        isa         => HashRef,
+        isa         => HashRef[Dict[ meta => class_type('Moose::Meta::Class'), wheel => WheelID ]],
         lazy        => 1,
         default     => sub { {} },
         clearer     => 'clear_subscriptions',
@@ -200,7 +200,15 @@ Each instance of a publication is stored as a hash with the following keys:
     has publications =>
     (
         metaclass   => 'MooseX::AttributeHelpers::Collection::Hash',
-        isa         => HashRef,
+        isa         => HashRef
+        [
+            Dict
+            [
+                methods => HashRef,
+                wheel   => WheelID,
+                alias   => SessionAlias,
+            ]
+        ],
         lazy        => 1,
         default     => sub { {} },
         clearer     => 'clear_publications',
@@ -215,8 +223,37 @@ Each instance of a publication is stored as a hash with the following keys:
         }
     );
 
+=attr actice_connectios
 
-=attr unknown_message_event is: 'rw', isa: Tuple[SessionAlias, Str]
+=cut
+
+    has active_connections =>
+    (
+        metaclass   => 'MooseX::AttributeHelpers::Collection::Hash',
+        isa         => HashRef
+        [
+            Dict
+            [
+                remote_address  => Str,
+                remote_port     => Int,
+                tag             => Optional[Ref],
+            ],
+        ],
+        lazy        => 1,
+        default     => sub { {} },
+        clearer     => 'clear_active_connections',
+        provides    => 
+        {
+            get     => 'get_active_connection',
+            set     => 'set_active_connection',
+            delete  => 'delete_active_connection',
+            count   => 'count_active_connections',
+            keys    => 'all_active_connection_ids',
+            exists  => 'has_active_connection',
+        }
+    );
+
+=attr unknown_message_event is: 'rw', isa: Tuple[SessionID|SessionAlias, Str]
 
 Set this attribute to receive unknown messages that were sent to the client. 
 This is handy for sending custom message types across the Server.
@@ -229,10 +266,117 @@ The event handler must have this signature:
     has unknown_message_event =>
     (
         is          => 'rw',
-        isa         => Tuple[SessionAlias, Str],
+        isa         => Tuple[SessionID|SessionAlias, Str],
         predicate   => 'has_unknown_message_event',
     );
 
+=attr socket_error_event is: 'rw', isa: Tuple[SessionID|SessionAlias, Str]
+
+When a socket error is received, the wheel is cleared, and the connection hash
+is deleted from the active connection structure. Set this attribute to be
+notified when a socket error occurs.
+
+The event handler must have this signature:
+(Str :$remote_address, Int :$remote_port, Ref :$tag?)
+
+=cut
+
+    has socket_error_event =>
+    (
+        is          => 'rw',
+        isa         => Tuple[SessionID|SessionAlias, Str],
+        predicate   => 'has_socket_error_event',
+    );
+
+=attr connect_error_event is: 'rw', isa: Tuple[SessionID|SessionAlias, Str]
+
+When a connect error is received, the wheel is cleared, and the connection hash
+is deleted from the active connection structure. Set this attribute to be
+notified when a socket error occurs.
+
+The event handler must have this signature:
+(Str :$remote_address, Int :$remote_port, Ref :$tag?)
+
+=cut
+
+    has connect_error_event =>
+    (
+        is          => 'rw',
+        isa         => Tuple[SessionID|SessionAlias, Str],
+        predicate   => 'has_socket_error_event',
+    );
+
+=method handle_inbound_data(ProxyMessage $data, WheelID $id) is Event
+
+Our implementation of handle_inbound_data expects a ProxyMessage as data. Here 
+is where the handling and routing of messages lives. Only handles two types of
+ProxyMessage: result, and deliver. For more information on ProxyMessage types,
+see the POD in POEx::ProxySession::Types. If an unknown message type is
+encountered and unknown_message_event is set, it will be delivered to there.
+
+=cut
+
+    method handle_inbound_data(ProxyMessage $data, WheelID $id) is Event
+    {
+        if($data->{type} eq 'result')
+        {
+            if($self->has_pending($data->{id}))
+            {
+                my $pending = $self->delete_pending($data->{id});
+                $self->post($pending->{return_session}, $pending->{return_event}, $data, $id, $pending->{tag});
+            }
+            else
+            {
+                warn q|Received a result for something we didn't send out|;
+                return;
+            }
+        }
+        elsif ($data->{type} eq 'deliver')
+        {
+            if($self->has_publication($data->{to}))
+            {
+                my $payload = thaw($data->{payload});
+                my $success = $self->post($data->{to}, $payload->{event}, @{ $payload->{args} });
+                my $back = \${q|Unable to post '| . $payload->{event} . q|' to '| . $data->{to} . q|'|} if !$success;
+                
+                $self->send_result
+                (
+                    success     => $success, 
+                    original    => $data,
+                    payload     => defined($back) ? $back : \'', 
+                    wheel_id    => $id
+                );
+            }
+            else
+            {
+                warn q|Received a delivery for someone that isn't us|;
+
+                $self->send_result
+                (
+                    success     => 0,
+                    original    => $data,
+                    payload     => \'Unknown recipient',
+                    wheel_id    => $id,
+                );
+
+            }
+        }
+        else
+        {
+            if($self->has_unknown_message_event)
+            {
+                $self->post
+                (
+                    $self->unknown_message_event->[0],
+                    $self->unknown_message_event->[1],
+                    $data,
+                    $id
+                );
+            }
+        }
+    }
+
+    with 'POEx::Role::TCPClient';
 =method after _start(@args) is Event
 
 The _start method is advised to hardcode the filter to use as a 
@@ -265,11 +409,16 @@ The return event will need the following signature:
         Ref :$tag?
     ) is Event
     {
+        if(is_Session($return_session) or is_DoesSessionInstantiation($return_session))
+        {
+            $return_session = $return_session->ID;
+        }
+
         my $connect_tag = 
         {
             address         => $remote_address,
             port            => $remote_port,
-            return_session  => $return_session // $self->poe->sender->ID, 
+            return_session  => defined($return_session) ? $return_session : $self->poe->sender->ID, 
             return_event    => $return_event,
             inner_tag       => $tag,
         };
@@ -289,92 +438,71 @@ and post the message with the paramters received from the socketfactory
         if($self->has_connection_tag($id))
         {
             my $tag = $self->delete_connection_tag($id);
+            
             $self->post
             (
-                $tag->{return_session},
+                $tag->{return_session}, 
                 $tag->{return_event},
                 connection_id   => $self->last_wheel,
                 remote_address  => inet_ntoa($address),
                 remote_port     => $port,
                 tag             => $tag->{inner_tag}
             );
+            
+            my $active_connection = 
+            {
+                remote_address  => $tag->{address},
+                remote_port     => $tag->{port},
+                tag             => $tag->{inner_tag},
+            };
+
+            $self->set_active_connection($id, $active_connection);
         }
         else
         {
             die "Unknown connection made. No connection tag associated with socket factory '$id'";
         }
     }
+=method after handle_socket_error(Str $action, Int $code, Str $message, WheelID $id) is Event
 
-=method handle_inbound_data(ProxyMessage $data, WheelID $id) is Event
-
-Our implementation of handle_inbound_data expects a ProxyMessage as data. Here 
-is where the handling and routing of messages lives. Only handles two types of
-ProxyMessage: result, and deliver. For more information on ProxyMessage types,
-see the POD in POEx::ProxySession::Types. If an unknown message type is
-encountered and unknown_message_event is set, it will be delivered to there.
 
 =cut
 
-    method handle_inbound_data(ProxyMessage $data, WheelID $id) is Event
+    after handle_socket_error(Str $action, Int $code, Str $message, WheelID $id) is Event
     {
-        given($data->{type})
+        $self->delete_wheel($id);
+        my $connection = $self->delete_active_connection($id);
+        
+        if($self->has_socket_error_event)
         {
-            when ('result')
-            {
-                if($self->has_pending($data->{id}))
-                {
-                    my $pending = $self->delete_pending($data->{id});
-                    $self->post($pending->{return_session}, $pending->{return_event}, $data, $id, $pending->{tag});
-                }
-                else
-                {
-                    warn q|Received a result for something we didn't send out|;
-                    return;
-                }
-            }
-            when ('deliver')
-            {
-                if($self->has_publication($data->{to}))
-                {
-                    my $payload = thaw($data->{payload});
-                    my $success = $self->post($data->{to}, $payload->{event}, @{ $payload->{args} });
-                    my $back = \${q|Unable to post '| . $payload->{event} . q|' to '| . $data->{to} . q|'|} if !$success;
-                    
-                    $self->send_result
-                    (
-                        success     => $success, 
-                        original    => $data,
-                        payload     => $back // \'', 
-                        wheel_id    => $id
-                    );
-                }
-                else
-                {
-                    warn q|Received a delivery for someone that isn't us|;
+            $self->post
+            (
+                @{$self->socket_error_event},
+                %$connection,
+            );
+        }
+    }
 
-                    $self->send_result
-                    (
-                        success     => 0,
-                        original    => $data,
-                        payload     => \'Unknown recipient',
-                        wheel_id    => $id,
-                    );
 
-                }
-            }
-            default
-            {
-                if($self->has_unknown_message_event)
-                {
-                    $self->post
-                    (
-                        $self->unknown_message_event->[0],
-                        $self->unknown_message_event->[1],
-                        $data,
-                        $id
-                    );
-                }
-            }
+=method after handle_connect_error(Str $action, Int $code, Str $message, WheelID $id) is Event
+
+
+=cut
+
+    after handle_connect_error(Str $action, Int $code, Str $message, WheelID $id) is Event
+    {
+        $self->delete_socket_factory($id);
+        my $tag = $self->delete_connection_tag($id);
+
+        if($self->has_connec_error_event)
+        {
+            $self->post
+            (
+                @{$self->connect_error_event},
+                remote_address => $tag->{address},
+                remote_port => $tag->{port},
+                tag => $tag->{inner_tag},
+            );
         }
     }
 
@@ -404,7 +532,12 @@ payload from the server containing the metadata.
         Ref :$tag?
     ) is Event
     {
-        $return_session = $return_session // $self->poe->sender;
+        if(is_Session($return_session) or is_DoesSessionInstantiation($return_session))
+        {
+            $return_session = $return_session->ID;
+        }
+
+        $return_session = defined($return_session) ? $return_session : $self->poe->sender->ID;
         
         my %data = 
         (
@@ -441,8 +574,8 @@ payload from the server containing the metadata.
                 args => [ $data, $id, $tag ],
                 options => 
                 { 
-                    trace => $self->options->{trace} // 0, 
-                    debug => $self->options->{debug} // 0,
+                    trace => exists($self->options->{trace}) && defined($self->options->{trace}) || 0, 
+                    debug => exists($self->options->{debug}) && defined($self->options->{debug}) || 0,
                 }
             );
         }
@@ -491,10 +624,15 @@ The return event must have the following signature:
     {
         die "Unknown session '$session_name'"
             if not $self->has_subscription($session_name);
-
-        my $session = to_Session($session_name);
         
-        $return_session = $return_session // $self->poe->sender;
+        my $session = to_Session($session_name);
+
+        if(is_Session($return_session) or is_DoesSessionInstantiation($return_session))
+        {
+            $return_session = $return_session->ID;
+        }
+
+        $return_session = defined($return_session) ? $return_session : $self->poe->sender->ID;
         
         if(!$session)
         {
@@ -573,6 +711,14 @@ payload from the server containing the metadata.
         Ref :$tag?
     ) is Event
     {
+        
+        if(is_Session($return_session) or is_DoesSessionInstantiation($return_session))
+        {
+            $return_session = $return_session->ID;
+        }
+
+        $return_session = defined($return_session) ? $return_session : $self->poe->sender->ID;
+
         my $meta = $session->meta;
         
         my $methods = {};
@@ -596,16 +742,34 @@ payload from the server containing the metadata.
                 next;
             }
 
+            my $traits = [];
+
+            foreach my $role ($method->meta->calculate_all_roles())
+            {
+                my $trait_args = [];
+                foreach my $attr_name ($role->get_attribute_list)
+                {
+                    push(@$trait_args, [$attr_name, $method->$attr_name]);
+                }
+                push(@$traits, [$role->name, $trait_args]);
+            }
+
             $methods->{$method->name} =  
             {
                 signature => $method->signature,
                 return_signature => $method->return_signature,
-                traits => $method->traits,
+                traits => $traits,
             };
         }
 
 
-        my %payload = ( session_name => $session->alias // $session->ID, session_alias => $session_alias, methods => $methods ); 
+        my %payload = 
+        ( 
+            session_name => defined($session->alias) ? $session->alias : $session->ID, 
+            session_alias => $session_alias, 
+            methods => $methods 
+        ); 
+        
         my $frozen;
         {
             local $SIG{__WARN__} = sub { };
@@ -621,7 +785,7 @@ payload from the server containing the metadata.
         my %rtstag = 
         (
             %payload,
-            return_session  => $return_session // $self->poe->sender->ID,
+            return_session  => $return_session,
             return_event    => $return_event,
             inner_tag       => $tag,
         );
@@ -685,7 +849,14 @@ be undef.
         Ref :$tag?
     ) is Event
     {
-        my $name = $session->alias // $session->ID;
+        if(is_Session($return_session) or is_DoesSessionInstantiation($return_session))
+        {
+            $return_session = $return_session->ID;
+        }
+
+        $return_session = defined($return_session) ? $return_session : $self->poe->sender->ID;
+        
+        my $name = defined($session->alias) ? $session->alias : $session->ID;
         die "Session '$name' is not currently published"
             if not $self->has_publication($name);
 
@@ -705,7 +876,7 @@ be undef.
             tag             =>
             {
                 session         => $name,
-                return_session  => $return_session // $self->poe->sender,
+                return_session  => $return_session,
                 return_event    => $return_event,
                 inner_tag       => $tag,
             }
@@ -751,6 +922,13 @@ The return event must have the following signature:
         Ref :$tag?
     ) is Event
     {
+        if(is_Session($return_session) or is_DoesSessionInstantiation($return_session))
+        {
+            $return_session = $return_session->ID;
+        }
+
+        $return_session = defined($return_session) ? $return_session : $self->poe->sender->ID;
+
         $self->return_to_sender
         (
             message         =>
@@ -763,7 +941,7 @@ The return event must have the following signature:
             return_event    => 'handle_on_listing',
             tag             =>
             {
-                return_session  => $return_session // $self->poe->sender,
+                return_session  => $return_session,
                 return_event    => $return_event,
                 inner_tag       => $tag,
             },

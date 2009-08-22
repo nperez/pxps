@@ -1,5 +1,4 @@
 package POEx::ProxySession::MessageSender;
-use 5.010;
 
 #ABSTRACT: ProxySession utility Role for sending message
 
@@ -7,7 +6,6 @@ use MooseX::Declare;
 
 role POEx::ProxySession::MessageSender
 {
-    use 5.010;
     use MooseX::Types::Moose(':all');
     use MooseX::AttributeHelpers;
     use POEx::Types(':all');
@@ -36,7 +34,7 @@ It has no accessors beyond those provided by AttributeHelpers:
     has pending =>
     (
         metaclass   => 'MooseX::AttributeHelpers::Collection::Hash',
-        isa         => HashRef,
+        isa         => HashRef[HashRef],
         lazy        => 1,
         default     => sub { {} },
         clearer     => 'clear_pending',
@@ -50,17 +48,36 @@ It has no accessors beyond those provided by AttributeHelpers:
             values  => 'all_pending',
         }
 
-    );    
+    );
+
+    has queue =>
+    (
+        metaclass   => 'MooseX::AttributeHelpers::Collection::Hash',
+        isa         => HashRef[ArrayRef],
+        lazy        => 1,
+        default     => sub { {} },
+        clearer     => 'clear_queue',
+        provides    =>
+        {
+            get     => 'get_queued',
+            set     => 'set_queued',
+            delete  => 'delete_queued',
+            count   => 'count_queued',
+            exists  => 'has_queued',
+            values  => 'all_queued',
+            keys    => 'all_sessions_queued',
+        }
+    );
 
 =method next_message_id() returns (Int)
 
 This method returns the next message id to be used.
 
 =cut
-
+    
+    my $id = 0;
     method next_message_id() returns (Int)
     {
-        state $id = 0;
         return $id++;
     }
 
@@ -80,8 +97,23 @@ This is a convenience method for sending result messages to the original sender.
         };
 
         $msg->{payload} = nfreeze($payload) if $payload;
-
-        $self->get_wheel($wheel_id)->put($msg);
+        
+        if($self->has_wheel($wheel_id))
+        {
+            $self->get_wheel($wheel_id)->put($msg);
+        }
+        else
+        {
+            my $queued = 
+            {
+                message => $msg,
+                sender  => $self->poe->sender->ID,
+            };
+            
+            $self->set_queued($wheel_id, [])
+                if not $self->has_queued($wheel_id);
+            push(@{ $self->get_queue($wheel_id) }, $queued);
+        }
     }
 
 =method send_message(Str :$type, Ref :$payload, WheelID :$wheel_id) is Event
@@ -94,7 +126,23 @@ connection that wheel_id references.
     method send_message(Str :$type, Ref :$payload, WheelID :$wheel_id) is Event
     {
         my $msg = { type => $type, id => $self->next_message_id(), payload => nfreeze($payload) };
-        $self->get_wheel($wheel_id)->put($msg);
+        
+        if($self->has_wheel($wheel_id))
+        {
+            $self->get_wheel($wheel_id)->put($msg);
+        }
+        else
+        {
+            my $queued = 
+            {
+                message => $msg,
+                sender  => $self->poe->sender->ID,
+            };
+
+            $self->set_queued($wheel_id, [])
+                if not $self->has_queued($wheel_id);
+            push(@{ $self->get_queue($wheel_id) }, $queued);
+        }
     }
 
 
@@ -115,7 +163,23 @@ message including where to send the result.
     {
         $message->{id} = $self->next_message_id();
         $self->set_pending($message->{id}, { tag => $tag, return_session => $return_session, return_event => $return_event });
-        $self->get_wheel($wheel_id)->put($message);
+        
+        if($self->has_wheel($wheel_id))
+        {
+            $self->get_wheel($wheel_id)->put($message);
+        }
+        else
+        {
+            my $queued = 
+            {
+                message => $message,
+                sender  => $self->poe->sender->ID,
+            };
+
+            $self->set_queued($wheel_id, [])
+                if not $self->has_queued($wheel_id);
+            push(@{ $self->get_queue($wheel_id) }, $queued);
+        }
     }
 }
 1;

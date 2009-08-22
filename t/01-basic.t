@@ -1,4 +1,4 @@
-use Test::More('tests', 23);
+use Test::More;
 use MooseX::Declare;
 
 BEGIN
@@ -9,8 +9,9 @@ BEGIN
 }
 use POE;
 
-class Foo with POEx::Role::SessionInstantiation
+class Foo
 {
+    with 'POEx::Role::SessionInstantiation';
     use aliased 'POEx::Role::Event';
     use aliased 'POEx::Role::ProxyEvent';
     use POEx::Types(':all');
@@ -79,8 +80,9 @@ class Foo with POEx::Role::SessionInstantiation
     }
 }
 
-class Tester with POEx::Role::SessionInstantiation
+class Tester
 {
+    with 'POEx::Role::SessionInstantiation';
     use Storable('nfreeze');
     use POEx::ProxySession::Types(':all');
     use POEx::Types(':all');
@@ -254,3 +256,4 @@ Tester->new(alias => 'Tester', options => {debug => 1, trace => 1});
 POE::Kernel->run();
 
 pass('done');
+done_testing();
