@@ -1,4 +1,7 @@
 Revision history for {{ $dist->name }} {{ $dist->version }}
 
 {{ $NEXT }}
+        Remove 5.10-ism from POEx::ProxySession::Types
+
+0.092340  2009-08-22 19:08:17 UTC
         Initial release
