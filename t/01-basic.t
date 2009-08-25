@@ -7,7 +7,10 @@ BEGIN
     use_ok('POEx::ProxySession::Server');
     use_ok('POEx::ProxySession::Client');
 }
+
 use POE;
+
+my $port = int(rand(10000)) + 50000;
 
 class Foo
 {
@@ -97,7 +100,7 @@ class Tester
         my $server = POEx::ProxySession::Server->new
         (
             listen_ip   => '127.0.0.1',
-            listen_port => 56789,
+            listen_port => $port,
             alias       => 'Server',
             options     => { trace => 1, debug => 1 },
         );
@@ -120,7 +123,7 @@ class Tester
             'Client', 
             'connect', 
             remote_address  => '127.0.0.1', 
-            remote_port     => 56789,
+            remote_port     => $port,
             return_session  => $self->alias,
             return_event    => 'post_connect',
             tag             => \'connect_tag'
@@ -257,3 +260,4 @@ POE::Kernel->run();
 
 pass('done');
 done_testing();
+0;
